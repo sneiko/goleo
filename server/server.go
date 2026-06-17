@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
 	"github.com/sneiko/goleo/component"
 	"github.com/sneiko/goleo/core"
 	"github.com/sneiko/goleo/media"
