@@ -22,6 +22,15 @@ import { Textarea } from "@/components/ui/textarea";
 import { loadSchema, predict, stream, uploadFile } from "@/lib/api";
 import type { AppSchema, ComponentSchema, InterfaceSchema, UploadResponse } from "@/types";
 
+type DemoMode =
+  | "none"
+  | "readme-hero"
+  | "readme-components"
+  | "readme-outputs"
+  | "readme-chat"
+  | "readme-adapters"
+  | "readme-mobile";
+
 type Values = Record<string, unknown>;
 type Outputs = Record<string, unknown>;
 type ChatMessage = {
@@ -32,6 +41,7 @@ type ChatMessage = {
 export default function App() {
   const [schema, setSchema] = useState<AppSchema | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const demoMode = readDemoMode();
 
   useEffect(() => {
     let active = true;
@@ -54,10 +64,22 @@ export default function App() {
 
   return (
     <main className="min-h-screen px-4 py-6 sm:px-6 lg:px-8">
-      <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
-        <header className="flex flex-col gap-2">
-          <p className="text-sm font-medium text-muted-foreground">Goleo</p>
-          <h1 className="text-3xl font-semibold tracking-normal sm:text-4xl">AI demos from Go functions</h1>
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
+        <header className="rounded-[1.25rem] border bg-card/85 p-6 shadow-sm backdrop-blur-sm">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div className="max-w-3xl">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-accent">Goleo showcase</p>
+              <h1 className="mt-2 text-4xl font-semibold tracking-normal sm:text-5xl">AI demos from Go functions</h1>
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground sm:text-base">
+                Wrap Go handlers, streaming chat flows, and adapter-backed tools in a single embedded web app.
+              </p>
+            </div>
+            <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
+              <Metric label="Surface" value="Embedded UI" />
+              <Metric label="Interfaces" value={String(schema?.interfaces.length ?? 0)} />
+              <Metric label="Runtime" value="Go-first" />
+            </dl>
+          </div>
         </header>
 
         {error ? <ErrorAlert title="Could not load app schema" message={error} /> : null}
@@ -69,33 +91,57 @@ export default function App() {
           </Empty>
         ) : null}
         {schema?.interfaces.map((iface) =>
-          iface.kind === "chat" ? <ChatInterface key={iface.id} iface={iface} /> : <FormInterface key={iface.id} iface={iface} />,
+          iface.kind === "chat" ? (
+            <ChatInterface key={iface.id} iface={iface} demoMode={demoMode} />
+          ) : (
+            <FormInterface key={iface.id} iface={iface} demoMode={demoMode} />
+          ),
         )}
       </div>
     </main>
   );
 }
 
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border bg-background/75 px-3 py-2 shadow-sm">
+      <dt className="text-xs uppercase tracking-[0.14em] text-muted-foreground">{label}</dt>
+      <dd className="mt-1 font-medium">{value}</dd>
+    </div>
+  );
+}
+
 function LoadingState() {
   return (
-    <Card>
-      <CardHeader>
+    <Card className="overflow-hidden border-border/80 shadow-sm">
+      <CardHeader className="border-b bg-card/70">
         <Skeleton className="h-5 w-40" />
         <Skeleton className="h-4 w-64" />
       </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        <Skeleton className="h-24 w-full" />
-        <Skeleton className="h-9 w-28" />
+      <CardContent className="grid gap-4 pt-6 lg:grid-cols-[1.1fr,0.9fr]">
+        <div className="flex flex-col gap-3">
+          <Skeleton className="h-24 w-full" />
+          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-9 w-28" />
+        </div>
+        <div className="flex flex-col gap-3">
+          <Skeleton className="h-28 w-full" />
+          <Skeleton className="h-40 w-full" />
+        </div>
       </CardContent>
     </Card>
   );
 }
 
-function FormInterface({ iface }: { iface: InterfaceSchema }) {
+function FormInterface({ iface, demoMode }: { iface: InterfaceSchema; demoMode: DemoMode }) {
   const [values, setValues] = useInitialValues(iface.inputs);
-  const [outputs, setOutputs] = useState<Outputs>({});
+  const [outputs, setOutputs] = useState<Outputs>(() => initialOutputs(iface.outputs, demoMode));
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const hasOutputValues = iface.outputs.some((component) => outputs[component.id] !== undefined);
+  const isOutputShowcase = demoMode === "readme-outputs";
+  const renderedInputs = isOutputShowcase ? outputShowcaseInputs(iface.inputs) : iface.inputs;
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -115,15 +161,23 @@ function FormInterface({ iface }: { iface: InterfaceSchema }) {
   }
 
   return (
-    <Card>
-      <CardHeader>
+    <Card className="overflow-hidden border-border/80 shadow-sm">
+      <CardHeader className="border-b bg-card/70">
         <CardTitle>Interface</CardTitle>
         <CardDescription>{iface.id}</CardDescription>
       </CardHeader>
       <form onSubmit={onSubmit}>
-        <CardContent className="flex flex-col gap-5">
-          <FieldGroup>
-            {iface.inputs.map((component) => (
+        <CardContent
+          className={
+            hasOutputValues
+              ? isOutputShowcase
+                ? "grid gap-6 pt-6 lg:grid-cols-[0.78fr,1.22fr]"
+                : "grid gap-6 pt-6 lg:grid-cols-[1.08fr,0.92fr]"
+              : "pt-6"
+          }
+        >
+          <FieldGroup className="gap-5">
+            {renderedInputs.map((component) => (
               <SchemaInput
                 key={component.id}
                 component={component}
@@ -132,17 +186,17 @@ function FormInterface({ iface }: { iface: InterfaceSchema }) {
                 onChange={(value) => setValues((current) => ({ ...current, [component.id]: value }))}
               />
             ))}
+            {error ? <ErrorAlert title="Request failed" message={error} /> : null}
           </FieldGroup>
-          {error ? <ErrorAlert title="Request failed" message={error} /> : null}
-          {iface.outputs.length > 0 ? (
-            <div className="grid gap-3">
+          {hasOutputValues ? (
+            <section className="flex flex-col gap-3">
               {iface.outputs.map((component) => (
                 <OutputBlock key={component.id} component={component} value={outputs[component.id]} />
               ))}
-            </div>
+            </section>
           ) : null}
         </CardContent>
-        <CardFooter>
+        <CardFooter className="border-t bg-card/55">
           <Button type="submit" disabled={isSubmitting}>
             {isSubmitting ? <Spinner /> : null}
             {isSubmitting ? "Running" : "Run"}
@@ -153,9 +207,9 @@ function FormInterface({ iface }: { iface: InterfaceSchema }) {
   );
 }
 
-function ChatInterface({ iface }: { iface: InterfaceSchema }) {
+function ChatInterface({ iface, demoMode }: { iface: InterfaceSchema; demoMode: DemoMode }) {
   const [message, setMessage] = useState("");
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(() => initialChatMessages(demoMode));
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const input = iface.inputs[0] ?? { id: `${iface.id}-message`, type: "textbox", label: "Message", props: {} };
@@ -190,20 +244,28 @@ function ChatInterface({ iface }: { iface: InterfaceSchema }) {
   }
 
   return (
-    <Card>
-      <CardHeader>
+    <Card className="overflow-hidden border-border/80 shadow-sm">
+      <CardHeader className="border-b bg-card/70">
         <CardTitle>Chat</CardTitle>
         <CardDescription>{iface.id}</CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col gap-5">
-        <div aria-label="Chat transcript" role="log" className="flex min-h-48 flex-col gap-3 rounded-md border bg-muted/30 p-3">
+      <CardContent className="flex flex-col gap-5 pt-6">
+        <div
+          aria-label="Chat transcript"
+          role="log"
+          className="flex min-h-72 flex-col gap-3 rounded-[1.25rem] border bg-muted/35 p-4"
+        >
           {messages.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Send a message to start the conversation.</p>
+            <p className="text-sm leading-6 text-muted-foreground">Send a message to start the conversation.</p>
           ) : (
             messages.map((item, index) => (
               <div
                 key={`${item.role}-${index}`}
-                className={item.role === "user" ? "ml-auto max-w-[85%] rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground" : "mr-auto max-w-[85%] rounded-md bg-card px-3 py-2 text-sm shadow-sm"}
+                className={
+                  item.role === "user"
+                    ? "ml-auto max-w-[85%] rounded-3xl rounded-br-md bg-primary px-4 py-3 text-sm leading-6 text-primary-foreground"
+                    : "mr-auto max-w-[85%] rounded-3xl rounded-bl-md border bg-card px-4 py-3 text-sm leading-6 shadow-sm"
+                }
               >
                 {item.content || (item.role === "assistant" && isSubmitting ? "..." : "")}
               </div>
@@ -229,7 +291,7 @@ function ChatInterface({ iface }: { iface: InterfaceSchema }) {
           />
         </Field>
       </CardContent>
-      <CardFooter>
+      <CardFooter className="border-t bg-card/55">
         <Button type="button" disabled={isSubmitting || message.trim() === ""} onClick={() => void submitMessage()}>
           {isSubmitting ? <Spinner /> : <Send data-icon="inline-start" />}
           Send
@@ -315,7 +377,7 @@ function SchemaInput({
   }
 
   if (component.type === "file" || component.type === "image") {
-    return <FileInput component={component} disabled={disabled} onChange={onChange} />;
+    return <FileInput component={component} disabled={disabled} value={value} onChange={onChange} />;
   }
 
   return (
@@ -337,14 +399,16 @@ function SchemaInput({
 function FileInput({
   component,
   disabled,
+  value,
   onChange,
 }: {
   component: ComponentSchema;
   disabled: boolean;
+  value: unknown;
   onChange: (value: unknown) => void;
 }) {
   const props = component.props ?? {};
-  const [upload, setUpload] = useState<UploadResponse | null>(null);
+  const [upload, setUpload] = useState<UploadResponse | null>(() => (isUploadResponse(value) ? value : null));
   const [error, setError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
 
@@ -381,7 +445,7 @@ function FileInput({
       />
       {isUploading ? <FieldDescription>Uploading...</FieldDescription> : null}
       {upload ? (
-        <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm">
+        <div className="flex items-center gap-2 rounded-2xl border bg-muted/40 px-3 py-2 text-sm shadow-sm">
           <FileText data-icon="inline-start" />
           <span className="font-medium">{upload.name}</span>
           <span className="text-muted-foreground">
@@ -399,12 +463,16 @@ function OutputBlock({ component, value }: { component: ComponentSchema; value: 
     return null;
   }
 
-  const content = component.type === "json" || typeof value === "object" ? JSON.stringify(value ?? "", null, 2) : String(value ?? "");
+  const content =
+    component.type === "json" || typeof value === "object" ? JSON.stringify(value ?? "", null, 2) : String(value ?? "");
 
   return (
-    <section className="rounded-md border bg-muted/30 p-3">
-      <h3 className="mb-2 text-sm font-medium">{component.label}</h3>
-      <pre className="whitespace-pre-wrap break-words text-sm">{content}</pre>
+    <section className="rounded-[1.25rem] border bg-background/80 p-4 shadow-sm">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold">{component.label}</h3>
+        <span className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{component.type}</span>
+      </div>
+      <pre className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground/90">{content}</pre>
     </section>
   );
 }
@@ -435,6 +503,87 @@ function useInitialValues(components: ComponentSchema[]) {
   );
 
   return useState<Values>(initialValues);
+}
+
+function readDemoMode(): DemoMode {
+  if (typeof window === "undefined") {
+    return "none";
+  }
+
+  const demo = new URLSearchParams(window.location.search).get("demo");
+  switch (demo) {
+    case "readme-hero":
+    case "readme-components":
+    case "readme-outputs":
+    case "readme-chat":
+    case "readme-adapters":
+    case "readme-mobile":
+      return demo;
+    default:
+      return "none";
+  }
+}
+
+function initialOutputs(components: ComponentSchema[], demoMode: DemoMode): Outputs {
+  if (
+    demoMode !== "readme-hero" &&
+    demoMode !== "readme-outputs" &&
+    demoMode !== "readme-adapters" &&
+    demoMode !== "readme-mobile"
+  ) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    components.flatMap((component) => {
+      const seededValue = component.props?.default;
+      return seededValue === undefined ? [] : [[component.id, seededValue]];
+    }),
+  );
+}
+
+function initialChatMessages(demoMode: DemoMode): ChatMessage[] {
+  if (demoMode !== "readme-chat") {
+    return [];
+  }
+
+  return [
+    {
+      role: "user",
+      content: "Need a cleaner launch message for an internal support copilot.",
+    },
+    {
+      role: "assistant",
+      content:
+        "Start with the outcome your team cares about: faster answers, fewer repetitive tickets, and a rollout plan that support leads can skim in under a minute.",
+    },
+  ];
+}
+
+function outputShowcaseInputs(components: ComponentSchema[]) {
+  if (components.length < 4) {
+    return components;
+  }
+
+  const first = components[0];
+  const last = components[components.length - 1];
+  const dropdown = components.find((component) => component.type === "dropdown");
+
+  return [first, dropdown, last].filter((component): component is ComponentSchema => component !== undefined);
+}
+
+function isUploadResponse(value: unknown): value is UploadResponse {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const upload = value as Partial<UploadResponse>;
+  return (
+    typeof upload.id === "string" &&
+    typeof upload.name === "string" &&
+    typeof upload.size === "number" &&
+    typeof upload.content_type === "string"
+  );
 }
 
 function errorMessage(error: unknown): string {

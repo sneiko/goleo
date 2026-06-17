@@ -15,10 +15,14 @@ help:
 	@printf '%s\n' '  make frontend-dev      Run the frontend dev server'
 	@printf '%s\n' '  make frontend-test     Run frontend tests'
 	@printf '%s\n' '  make frontend-build    Build embedded frontend assets'
+	@printf '%s\n' '  make readme-assets     Generate README screenshots'
 	@printf '%s\n' '  make check        Run fmt, vet, tests, frontend tests, and frontend build'
 	@printf '%s\n' '  make run-simple   Run examples/simple'
 	@printf '%s\n' '  make run-chat     Run examples/chat'
 	@printf '%s\n' '  make run-http     Run examples/http-wrapper'
+	@printf '%s\n' '  make run-showcase-form  Run examples/showcase-form'
+	@printf '%s\n' '  make run-showcase-chat  Run examples/showcase-chat'
+	@printf '%s\n' '  make run-showcase-adapters  Run examples/showcase-adapters'
 	@printf '%s\n' '  make run-ollama   Run examples/ollama'
 	@printf '%s\n' '  make run-openai-stream  Run examples/openai-stream'
 	@printf '%s\n' '  make smoke        Run a local HTTP smoke test'
@@ -54,6 +58,10 @@ frontend-test:
 frontend-build:
 	$(PNPM) --dir frontend build
 
+.PHONY: readme-assets
+readme-assets: frontend-build
+	./scripts/capture-readme-assets.sh
+
 .PHONY: run-simple
 run-simple:
 	GOLEO_ADDR=$(GOLEO_ADDR) $(GO) run ./examples/simple
@@ -65,6 +73,18 @@ run-chat:
 .PHONY: run-http
 run-http:
 	GOLEO_ADDR=$(GOLEO_ADDR) $(GO) run ./examples/http-wrapper
+
+.PHONY: run-showcase-form
+run-showcase-form:
+	GOLEO_ADDR=$(GOLEO_ADDR) $(GO) run ./examples/showcase-form
+
+.PHONY: run-showcase-chat
+run-showcase-chat:
+	GOLEO_ADDR=$(GOLEO_ADDR) $(GO) run ./examples/showcase-chat
+
+.PHONY: run-showcase-adapters
+run-showcase-adapters:
+	GOLEO_ADDR=$(GOLEO_ADDR) $(GO) run ./examples/showcase-adapters
 
 .PHONY: run-ollama
 run-ollama:

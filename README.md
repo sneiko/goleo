@@ -1,14 +1,95 @@
-# Goleo
+# Goleo: Build AI Demo Apps in Go
 
-Goleo is a Go-first framework for quick AI demos. It lets you bind Go functions,
-HTTP endpoints, OpenAI-compatible APIs, or local processes to a small embedded web UI.
+[![Go version](https://img.shields.io/badge/go-1.24+-00ADD8?logo=go)](go.mod)
+[![Frontend](https://img.shields.io/badge/frontend-React%20%2B%20Vite-646CFF?logo=vite)](frontend)
+[![Status](https://img.shields.io/badge/status-MVP-orange)](#status)
+
+[Architecture](docs/architecture.md) | [Examples](examples) | [Frontend](frontend)
+
+Goleo turns Go functions, streaming handlers, HTTP endpoints, OpenAI-compatible
+APIs, Ollama models, and local processes into embedded web apps.
+
+Define inputs and outputs in Go, launch one binary, and get a usable local UI
+with prediction, streaming, and file upload endpoints. The built frontend is
+embedded into the Go binary, so there is no separate frontend deployment step.
+
+![Goleo showcase hero](docs/assets/readme-hero.png)
+
+## What You Can Build
+
+### Function-backed tools
+
+Build richer local tools than a single textbox demo. The showcase form combines
+typed inputs, file uploads, and multiple outputs in one surface.
+
+![Showcase form components](docs/assets/readme-components.png)
+
+### Streaming chat flows
+
+Use `Chat` with a streaming handler to ship copilot-style demos and assistant
+workflows without building the chat shell yourself.
+
+![Showcase chat transcript](docs/assets/readme-chat.png)
+
+### Adapter-backed interfaces
+
+Wrap external backends behind the same UI contract. The same surface can front a
+native Go handler, an HTTP API, an OpenAI-compatible endpoint, Ollama, or a
+local process.
+
+![Showcase adapters](docs/assets/readme-adapters.png)
+
+## Built-In Components
+
+The embedded UI supports typed form controls and structured outputs out of the
+box.
+
+Built-in constructors include `Textbox`, `Number`, `Slider`, `Checkbox`,
+`Dropdown`, `Button`, `Markdown`, `JSON`, `Image`, `File`, and `Chatbot`.
+
+You can also use `CustomComponent` when you need to introduce a schema type
+before a first-class constructor exists.
+
+<p>
+  <img src="docs/assets/readme-components.png" alt="Goleo components showcase" width="49%">
+  <img src="docs/assets/readme-outputs.png" alt="Goleo outputs showcase" width="49%">
+</p>
+
+<p align="center">
+  <img src="docs/assets/readme-mobile.png" alt="Goleo mobile layout" width="34%">
+</p>
+
+## Installation
+
+Prerequisite: Goleo requires Go 1.24 or higher.
+
+```sh
+go get github.com/sneiko/goleo
+```
+
+For local development of this repository:
+
+```sh
+make check
+```
+
+> [!TIP]
+> `make run-*` targets bind to `:7871` by default. Override the port when it is
+> already in use, for example `GOLEO_ADDR=:7872 make run-chat`.
+
+## Building Your First Demo
+
+Create a Goleo app around any Go function:
 
 ```go
 package main
 
 import (
+	"context"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/sneiko/goleo"
 )
@@ -16,6 +97,7 @@ import (
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	app := goleo.New(goleo.WithLogger(logger))
+
 	app.Interface(
 		goleo.Handler(func(input string) (string, error) {
 			return "Hello " + input, nil
@@ -24,48 +106,104 @@ func main() {
 		goleo.Outputs(goleo.Textbox("Result")),
 	)
 
-	if err := app.Launch(goleo.LaunchOptions{Addr: ":7860"}); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := app.LaunchContext(ctx, goleo.LaunchOptions{Addr: ":7860"}); err != nil {
 		logger.Error("goleo server stopped", "error", err)
 		os.Exit(1)
 	}
 }
 ```
 
-Run the simple example:
+Run the bundled minimal example:
 
 ```sh
 make run-simple
 ```
 
-Makefile demo targets bind examples to `:7871` by default. Override the port
-with `GOLEO_ADDR` when needed:
+Open `http://localhost:7871` after the server starts.
 
-```sh
-make run-chat GOLEO_ADDR=:7872
+If you run examples directly with `go run`, they use `:7860` unless
+`GOLEO_ADDR` is set.
+
+## Showcase Examples
+
+Use the richer examples when you want a more realistic surface than the minimal
+hello-world demo.
+
+| Command | Example | What it shows |
+| --- | --- | --- |
+| `make run-showcase-form` | [`examples/showcase-form`](examples/showcase-form) | Typed form inputs, file upload, text output, and structured JSON |
+| `make run-showcase-chat` | [`examples/showcase-chat`](examples/showcase-chat) | Streaming chat transcript with a copilot-style response |
+| `make run-showcase-adapters` | [`examples/showcase-adapters`](examples/showcase-adapters) | Adapter-oriented prompt flow with backend metadata |
+
+## More Examples
+
+The repository keeps the focused integration demos as separate entry points.
+
+| Command | Example | Notes |
+| --- | --- | --- |
+| `make run-simple` | [`examples/simple`](examples/simple) | Minimal function-backed form |
+| `make run-chat` | [`examples/chat`](examples/chat) | Basic streaming chat surface |
+| `make run-http` | [`examples/http-wrapper`](examples/http-wrapper) | Wrap an HTTP endpoint |
+| `OLLAMA_MODEL=llama3.2 make run-ollama` | [`examples/ollama`](examples/ollama) | Stream from Ollama |
+| `OPENAI_BASE_URL=http://localhost:11434/v1 OPENAI_MODEL=llama3.2 make run-openai-stream` | [`examples/openai-stream`](examples/openai-stream) | Stream from any OpenAI-compatible API |
+
+## Chat and Streaming
+
+Use `Chat` with a streaming handler for chat-style demos:
+
+```go
+app.Chat(goleo.StreamHandler(func(input string, emit goleo.EmitFunc) error {
+	emit("You said: " + input)
+	return nil
+}))
 ```
 
-Run a local Ollama streaming chat demo:
+Run the bundled chat demo:
 
 ```sh
-OLLAMA_MODEL=llama3.2 make run-ollama
+make run-chat
 ```
 
-Run a generic OpenAI-compatible streaming chat demo:
+## Wrapping APIs and Processes
 
-```sh
-OPENAI_BASE_URL=http://localhost:11434/v1 OPENAI_MODEL=llama3.2 make run-openai-stream
+Goleo adapters return regular handler bindings, so you can swap native Go
+functions for external systems without changing the UI definition.
+
+Wrap an HTTP endpoint:
+
+```go
+app.Interface(
+	goleo.HTTPAdapter(goleo.HTTPAdapterOptions{URL: "http://localhost:9000/predict"}),
+	goleo.Inputs(goleo.Textbox("Prompt")),
+	goleo.Outputs(goleo.Textbox("Result")),
+)
 ```
+
+Wrap an OpenAI-compatible streaming API:
+
+```go
+app.Chat(goleo.OpenAICompatibleStreamAdapter(goleo.OpenAICompatibleOptions{
+	BaseURL: "http://localhost:11434/v1",
+	APIKey:  os.Getenv("OPENAI_API_KEY"),
+	Model:   "llama3.2",
+}))
+```
+
+## Server Lifecycle
 
 Configure HTTP server timeouts when needed:
 
 ```go
 app.Launch(goleo.LaunchOptions{
-    Addr:              ":7860",
-    ReadHeaderTimeout: 5 * time.Second,
-    ReadTimeout:       30 * time.Second,
-    WriteTimeout:      0, // keep unset for long-lived streaming responses
-    IdleTimeout:       60 * time.Second,
-    ShutdownTimeout:   5 * time.Second,
+	Addr:              ":7860",
+	ReadHeaderTimeout: 5 * time.Second,
+	ReadTimeout:       30 * time.Second,
+	WriteTimeout:      0, // keep unset for long-lived streaming responses
+	IdleTimeout:       60 * time.Second,
+	ShutdownTimeout:   5 * time.Second,
 })
 ```
 
@@ -85,35 +223,7 @@ srv := app.Server(goleo.LaunchOptions{Addr: ":7860"})
 err := srv.ListenAndServe()
 ```
 
-Then open `http://localhost:7860` for direct `go run` examples, or
-`http://localhost:7871` for Makefile demo targets.
-
-## Frontend development
-
-Goleo is still Go-first: the built frontend is committed under
-`server/assets`, so users can run examples without installing Node.js.
-
-The embedded UI is developed as a React/Vite/shadcn frontend in `frontend`:
-
-```sh
-make frontend-install
-make frontend-dev
-make frontend-test
-make frontend-build
-```
-
-`make frontend-build` writes the static assets consumed by Go's
-`go:embed`. Run it after changing frontend code.
-
-Component constructors accept typed options for common UI props:
-
-```go
-goleo.Textbox("Prompt", goleo.WithPlaceholder("Ask something..."), goleo.WithDefault("Hello"))
-goleo.Slider("Temperature", goleo.WithMin(0), goleo.WithMax(2), goleo.WithStep(0.1), goleo.WithDefault(0.7))
-goleo.File("Image", goleo.WithAccept("image/*"))
-```
-
-## Logging
+## Logging and API Errors
 
 Goleo uses `log/slog` for structured logs. Logging is opt-in: if you do not
 pass a logger, Goleo stays quiet.
@@ -124,8 +234,8 @@ app := goleo.New(goleo.WithLogger(logger))
 ```
 
 The built-in server logs request completion events with method, path, status,
-duration, and `request_id`. If a request includes `X-Request-ID`, Goleo keeps it;
-otherwise it generates one and returns it in the response header.
+duration, and `request_id`. If a request includes `X-Request-ID`, Goleo keeps
+it; otherwise it generates one and returns it in the response header.
 
 API errors use a structured JSON shape:
 
@@ -138,9 +248,31 @@ API errors use a structured JSON shape:
 }
 ```
 
+## Frontend Development
+
+Goleo stays Go-first: built frontend assets are committed under `server/assets`,
+so users can run examples without installing Node.js.
+
+The embedded UI itself lives in `frontend` as a React/Vite/shadcn app:
+
+```sh
+make frontend-install
+make frontend-dev
+make frontend-test
+make frontend-build
+```
+
+`make frontend-build` writes the static assets consumed by Go's `go:embed`.
+
+Maintainers can regenerate the README screenshots with:
+
+```sh
+make readme-assets
+```
+
 ## Status
 
-This is an MVP implementation focused on Gradio-like demos:
+This is an MVP implementation focused on Gradio-style local AI demos:
 
 - `Interface` for function-backed forms
 - `Chat` for streaming chat demos
@@ -154,12 +286,12 @@ and multi-user state are intentionally out of scope for v1.
 
 ## Architecture
 
-The root `goleo` package is a facade over focused internal packages:
+The root `goleo` package is a facade over focused packages:
 
 - `component`: component schema and constructors
 - `core`: app model and schema generation
 - `runtime`: handler binding and streaming abstraction
 - `server`: HTTP routes, uploads, SSE, embedded frontend
-- `adapter`: HTTP, OpenAI-compatible, and process adapters
+- `adapter`: HTTP, OpenAI-compatible, Ollama, and process adapters
 
 See [docs/architecture.md](docs/architecture.md) for extension points.
