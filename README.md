@@ -58,10 +58,6 @@ before a first-class constructor exists.
   <img src="docs/assets/readme-outputs.png" alt="Goleo outputs showcase" width="49%">
 </p>
 
-<p align="center">
-  <img src="docs/assets/readme-mobile.png" alt="Goleo mobile layout" width="34%">
-</p>
-
 ## Audio and Voice
 
 Use `Interface` with `Audio(...)` when you want a normal request/response flow
@@ -72,15 +68,15 @@ with metadata plus a temporary `Path`. If the handler returns a
 
 ```go
 app.Interface(
-	goleo.Handler(func(clip goleo.AudioInput) (string, goleo.AudioOutput, error) {
-		return "received " + clip.Name, goleo.AudioOutput{
-			Name:        "reply.wav",
-			ContentType: clip.ContentType,
-			Path:        clip.Path,
-		}, nil
-	}),
-	goleo.Inputs(goleo.Audio("Prompt audio")),
-	goleo.Outputs(goleo.Textbox("Summary"), goleo.Audio("Reply audio")),
+ goleo.Handler(func(clip goleo.AudioInput) (string, goleo.AudioOutput, error) {
+  return "received " + clip.Name, goleo.AudioOutput{
+   Name:        "reply.wav",
+   ContentType: clip.ContentType,
+   Path:        clip.Path,
+  }, nil
+ }),
+ goleo.Inputs(goleo.Audio("Prompt audio")),
+ goleo.Outputs(goleo.Textbox("Summary"), goleo.Audio("Reply audio")),
 )
 ```
 
@@ -91,25 +87,25 @@ interrupts, and mixed text/audio output events. The browser connects to
 
 ```go
 app.Voice(goleo.VoiceHandler(func(session *goleo.VoiceSession) error {
-	for {
-		event, err := session.Receive()
-		if err != nil {
-			return err
-		}
+ for {
+  event, err := session.Receive()
+  if err != nil {
+   return err
+  }
 
-		switch event.Type {
-		case "session.start":
-			if err := session.Send(goleo.VoiceEvent{Type: "session.ready"}); err != nil {
-				return err
-			}
-		case "input.stop":
-			if err := session.Send(goleo.VoiceEvent{Type: "output.text", Text: "turn complete"}); err != nil {
-				return err
-			}
-		case "session.close":
-			return session.Send(goleo.VoiceEvent{Type: "session.closed"})
-		}
-	}
+  switch event.Type {
+  case "session.start":
+   if err := session.Send(goleo.VoiceEvent{Type: "session.ready"}); err != nil {
+    return err
+   }
+  case "input.stop":
+   if err := session.Send(goleo.VoiceEvent{Type: "output.text", Text: "turn complete"}); err != nil {
+    return err
+   }
+  case "session.close":
+   return session.Send(goleo.VoiceEvent{Type: "session.closed"})
+  }
+ }
 }))
 ```
 
@@ -144,34 +140,34 @@ Create a Goleo app around any Go function:
 package main
 
 import (
-	"context"
-	"log/slog"
-	"os"
-	"os/signal"
-	"syscall"
+ "context"
+ "log/slog"
+ "os"
+ "os/signal"
+ "syscall"
 
-	"github.com/sneiko/goleo"
+ "github.com/sneiko/goleo"
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	app := goleo.New(goleo.WithLogger(logger))
+ logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+ app := goleo.New(goleo.WithLogger(logger))
 
-	app.Interface(
-		goleo.Handler(func(input string) (string, error) {
-			return "Hello " + input, nil
-		}),
-		goleo.Inputs(goleo.Textbox("Prompt")),
-		goleo.Outputs(goleo.Textbox("Result")),
-	)
+ app.Interface(
+  goleo.Handler(func(input string) (string, error) {
+   return "Hello " + input, nil
+  }),
+  goleo.Inputs(goleo.Textbox("Prompt")),
+  goleo.Outputs(goleo.Textbox("Result")),
+ )
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+ ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+ defer stop()
 
-	if err := app.LaunchContext(ctx, goleo.LaunchOptions{Addr: ":7860"}); err != nil {
-		logger.Error("goleo server stopped", "error", err)
-		os.Exit(1)
-	}
+ if err := app.LaunchContext(ctx, goleo.LaunchOptions{Addr: ":7860"}); err != nil {
+  logger.Error("goleo server stopped", "error", err)
+  os.Exit(1)
+ }
 }
 ```
 
@@ -219,8 +215,8 @@ Use `Chat` with a streaming handler for chat-style demos:
 
 ```go
 app.Chat(goleo.StreamHandler(func(input string, emit goleo.EmitFunc) error {
-	emit("You said: " + input)
-	return nil
+ emit("You said: " + input)
+ return nil
 }))
 ```
 
@@ -268,9 +264,9 @@ Wrap an HTTP endpoint:
 
 ```go
 app.Interface(
-	goleo.HTTPAdapter(goleo.HTTPAdapterOptions{URL: "http://localhost:9000/predict"}),
-	goleo.Inputs(goleo.Textbox("Prompt")),
-	goleo.Outputs(goleo.Textbox("Result")),
+ goleo.HTTPAdapter(goleo.HTTPAdapterOptions{URL: "http://localhost:9000/predict"}),
+ goleo.Inputs(goleo.Textbox("Prompt")),
+ goleo.Outputs(goleo.Textbox("Result")),
 )
 ```
 
@@ -278,9 +274,9 @@ Wrap an OpenAI-compatible streaming API:
 
 ```go
 app.Chat(goleo.OpenAICompatibleStreamAdapter(goleo.OpenAICompatibleOptions{
-	BaseURL: "http://localhost:11434/v1",
-	APIKey:  os.Getenv("OPENAI_API_KEY"),
-	Model:   "llama3.2",
+ BaseURL: "http://localhost:11434/v1",
+ APIKey:  os.Getenv("OPENAI_API_KEY"),
+ Model:   "llama3.2",
 }))
 ```
 
@@ -290,12 +286,12 @@ Configure HTTP server timeouts when needed:
 
 ```go
 app.Launch(goleo.LaunchOptions{
-	Addr:              ":7860",
-	ReadHeaderTimeout: 5 * time.Second,
-	ReadTimeout:       30 * time.Second,
-	WriteTimeout:      0, // keep unset for long-lived streaming responses
-	IdleTimeout:       60 * time.Second,
-	ShutdownTimeout:   5 * time.Second,
+ Addr:              ":7860",
+ ReadHeaderTimeout: 5 * time.Second,
+ ReadTimeout:       30 * time.Second,
+ WriteTimeout:      0, // keep unset for long-lived streaming responses
+ IdleTimeout:       60 * time.Second,
+ ShutdownTimeout:   5 * time.Second,
 })
 ```
 
