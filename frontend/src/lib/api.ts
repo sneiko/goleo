@@ -1,4 +1,11 @@
-import type { AppSchema, UploadResponse } from "@/types";
+import type {
+  AppSchema,
+  UploadResponse,
+  VoiceClientEvent,
+  VoiceServerEvent,
+  VoiceSessionCallbacks,
+  VoiceSessionConnection,
+} from "@/types";
 
 export async function loadSchema(): Promise<AppSchema> {
   const response = await fetch("/api/schema");
@@ -77,6 +84,50 @@ export async function uploadFile(file: File): Promise<UploadResponse> {
   }
 
   return response.json() as Promise<UploadResponse>;
+}
+
+export function openVoiceSession(interfaceID: string, callbacks: VoiceSessionCallbacks): VoiceSessionConnection {
+  const url = new URL(`/api/voice/${interfaceID}/ws`, window.location.href);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+
+  const socket = new WebSocket(url);
+  const pending: VoiceClientEvent[] = [];
+
+  socket.addEventListener("open", () => {
+    for (const event of pending.splice(0)) {
+      socket.send(JSON.stringify(event));
+    }
+  });
+
+  socket.addEventListener("message", (event) => {
+    try {
+      callbacks.onEvent(JSON.parse(String(event.data)) as VoiceServerEvent);
+    } catch (error) {
+      callbacks.onError(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+
+  socket.addEventListener("close", () => {
+    callbacks.onClose();
+  });
+
+  socket.addEventListener("error", () => {
+    callbacks.onError(new Error("voice session failed"));
+  });
+
+  return {
+    send(event) {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(event));
+        return;
+      }
+
+      pending.push(event);
+    },
+    close() {
+      socket.close();
+    },
+  };
 }
 
 export function parseServerSentEvents(buffer: string): string[] {

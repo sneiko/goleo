@@ -46,7 +46,8 @@ type Interface struct {
 	Inputs  []component.Component `json:"inputs"`
 	Outputs []component.Component `json:"outputs"`
 
-	Handler *runtime.HandlerBinding `json:"-"`
+	Handler      *runtime.HandlerBinding `json:"-"`
+	VoiceHandler *runtime.VoiceBinding   `json:"-"`
 }
 
 // Schema is the JSON contract consumed by the embedded frontend.
@@ -118,6 +119,21 @@ func (app *App) Chat(handler *runtime.HandlerBinding) {
 		Inputs:  assignComponentIDs([]component.Component{component.Textbox("Message")}, id+"-input"),
 		Outputs: assignComponentIDs([]component.Component{component.Chatbot("Chat")}, id+"-output"),
 		Handler: handler,
+	})
+}
+
+// Voice registers a bidirectional voice session interface.
+func (app *App) Voice(handler *runtime.VoiceBinding) {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+
+	id := "voice-" + strconv.Itoa(countKind(app.interfaces, "voice")+1)
+	app.interfaces = append(app.interfaces, Interface{
+		ID:           id,
+		Kind:         "voice",
+		Inputs:       []component.Component{},
+		Outputs:      []component.Component{},
+		VoiceHandler: handler,
 	})
 }
 

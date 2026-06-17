@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, FileText, Send } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle, FileAudio, FileText, Mic, PhoneCall, Send, Square } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -19,8 +19,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { loadSchema, predict, stream, uploadFile } from "@/lib/api";
-import type { AppSchema, ComponentSchema, InterfaceSchema, UploadResponse } from "@/types";
+import { loadSchema, openVoiceSession, predict, stream, uploadFile } from "@/lib/api";
+import type {
+  AppSchema,
+  ComponentSchema,
+  InterfaceSchema,
+  UploadResponse,
+  VoiceServerEvent,
+  VoiceSessionConnection,
+} from "@/types";
 
 type DemoMode =
   | "none"
@@ -35,6 +42,11 @@ type Values = Record<string, unknown>;
 type Outputs = Record<string, unknown>;
 type ChatMessage = {
   role: "user" | "assistant";
+  content: string;
+};
+
+type VoiceTranscriptItem = {
+  kind: "system" | "assistant";
   content: string;
 };
 
@@ -93,6 +105,8 @@ export default function App() {
         {schema?.interfaces.map((iface) =>
           iface.kind === "chat" ? (
             <ChatInterface key={iface.id} iface={iface} demoMode={demoMode} />
+          ) : iface.kind === "voice" ? (
+            <VoiceInterface key={iface.id} iface={iface} />
           ) : (
             <FormInterface key={iface.id} iface={iface} demoMode={demoMode} />
           ),
@@ -301,6 +315,205 @@ function ChatInterface({ iface, demoMode }: { iface: InterfaceSchema; demoMode: 
   );
 }
 
+function VoiceInterface({ iface }: { iface: InterfaceSchema }) {
+  const [connectionState, setConnectionState] = useState<"disconnected" | "connecting" | "connected">("disconnected");
+  const [transcript, setTranscript] = useState<VoiceTranscriptItem[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [latestAudio, setLatestAudio] = useState<UploadResponse | null>(null);
+  const [speakerState, setSpeakerState] = useState("idle");
+  const connectionRef = useRef<VoiceSessionConnection | null>(null);
+  const sequenceRef = useRef(0);
+
+  const recorder = useStreamingAudioRecorder({
+    onChunk: async (blob, mimeType) => {
+      const connection = connectionRef.current;
+      if (!connection) {
+        throw new Error("voice session is not connected");
+      }
+
+      const data = await blobToBase64(blob);
+      sequenceRef.current += 1;
+      connection.send({
+        type: "input.audio",
+        audio: {
+          mime_type: mimeType,
+          sequence: sequenceRef.current,
+          data,
+        },
+      });
+    },
+    onStop: async () => {
+      connectionRef.current?.send({ type: "input.stop" });
+    },
+    onError: (message) => setError(message),
+  });
+
+  useEffect(() => {
+    return () => {
+      connectionRef.current?.close();
+      connectionRef.current = null;
+    };
+  }, []);
+
+  function onVoiceEvent(event: VoiceServerEvent) {
+    switch (event.type) {
+      case "session.ready":
+        setConnectionState("connected");
+        setSpeakerState("idle");
+        setTranscript((current) => [...current, { kind: "system", content: "Voice session ready." }]);
+        return;
+      case "session.closed":
+        setConnectionState("disconnected");
+        setTranscript((current) => [...current, { kind: "system", content: "Voice session closed." }]);
+        connectionRef.current?.close();
+        connectionRef.current = null;
+        return;
+      case "output.text":
+        if (event.text) {
+          const text = event.text;
+          setTranscript((current) => [...current, { kind: "assistant", content: text }]);
+        }
+        return;
+      case "output.audio":
+        if (event.audio) {
+          setLatestAudio(event.audio);
+          setSpeakerState("ready");
+        }
+        return;
+      case "output.state":
+        if (event.state) {
+          setSpeakerState(event.state);
+          setTranscript((current) => [...current, { kind: "system", content: `Output state: ${event.state}` }]);
+        }
+        return;
+      case "error":
+        setError(event.text ?? "voice session failed");
+        return;
+      default:
+        return;
+    }
+  }
+
+  function connect() {
+    if (connectionRef.current) {
+      return;
+    }
+
+    setError(null);
+    setConnectionState("connecting");
+
+    const connection = openVoiceSession(iface.id, {
+      onEvent: onVoiceEvent,
+      onError: (nextError) => {
+        setError(nextError.message);
+        setConnectionState("disconnected");
+        connectionRef.current = null;
+      },
+      onClose: () => {
+        setConnectionState("disconnected");
+        connectionRef.current = null;
+      },
+    });
+
+    connectionRef.current = connection;
+    connection.send({ type: "session.start" });
+  }
+
+  function disconnect() {
+    connectionRef.current?.send({ type: "session.close" });
+  }
+
+  function interrupt() {
+    connectionRef.current?.send({ type: "output.interrupt" });
+  }
+
+  return (
+    <Card className="overflow-hidden border-border/80 shadow-sm">
+      <CardHeader className="border-b bg-card/70">
+        <CardTitle>Voice</CardTitle>
+        <CardDescription>{iface.id}</CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-6 pt-6 lg:grid-cols-[0.9fr,1.1fr]">
+        <section className="flex flex-col gap-4">
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="rounded-[1.25rem] border bg-muted/35 p-4">
+              <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Connection</p>
+              <p className="mt-2 text-sm font-medium capitalize">{connectionState}</p>
+            </div>
+            <div className="rounded-[1.25rem] border bg-muted/35 p-4">
+              <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Microphone</p>
+              <p className="mt-2 text-sm font-medium">{recorder.isRecording ? "Live" : "Muted"}</p>
+            </div>
+            <div className="rounded-[1.25rem] border bg-muted/35 p-4">
+              <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Speaker</p>
+              <p className="mt-2 text-sm font-medium capitalize">{speakerState}</p>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <Button type="button" disabled={connectionState !== "disconnected"} onClick={connect}>
+              <PhoneCall data-icon="inline-start" />
+              Connect voice
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={connectionState !== "connected" || recorder.isRecording}
+              onClick={() => void recorder.start()}
+            >
+              <Mic data-icon="inline-start" />
+              Unmute mic
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={!recorder.isRecording}
+              onClick={() => recorder.stop()}
+            >
+              <Square data-icon="inline-start" />
+              Mute mic
+            </Button>
+            <Button type="button" variant="outline" disabled={connectionState === "disconnected"} onClick={interrupt}>
+              Interrupt
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={connectionState !== "connected" || recorder.isRecording}
+              onClick={disconnect}
+            >
+              Disconnect
+            </Button>
+          </div>
+          {error ? <ErrorAlert title="Voice session failed" message={error} /> : null}
+          {latestAudio ? <AudioPreview label="Voice reply preview" asset={latestAudio} /> : null}
+        </section>
+        <section
+          aria-label="Voice transcript"
+          role="log"
+          className="flex min-h-72 flex-col gap-3 rounded-[1.25rem] border bg-muted/35 p-4"
+        >
+          {transcript.length === 0 ? (
+            <p className="text-sm leading-6 text-muted-foreground">Connect the voice session to start exchanging events.</p>
+          ) : (
+            transcript.map((item, index) => (
+              <div
+                key={`${item.kind}-${index}`}
+                className={
+                  item.kind === "assistant"
+                    ? "mr-auto max-w-[85%] rounded-3xl rounded-bl-md border bg-card px-4 py-3 text-sm leading-6 shadow-sm"
+                    : "max-w-[85%] rounded-3xl border bg-background px-4 py-3 text-sm leading-6 text-muted-foreground"
+                }
+              >
+                {item.content}
+              </div>
+            ))
+          )}
+        </section>
+      </CardContent>
+    </Card>
+  );
+}
+
 function SchemaInput({
   component,
   disabled,
@@ -376,6 +589,10 @@ function SchemaInput({
     );
   }
 
+  if (component.type === "audio") {
+    return <AudioInput component={component} disabled={disabled} value={value} onChange={onChange} />;
+  }
+
   if (component.type === "file" || component.type === "image") {
     return <FileInput component={component} disabled={disabled} value={value} onChange={onChange} />;
   }
@@ -392,6 +609,81 @@ function SchemaInput({
         value={String(defaultValue)}
         onChange={(event) => onChange(event.target.value)}
       />
+    </Field>
+  );
+}
+
+function AudioInput({
+  component,
+  disabled,
+  value,
+  onChange,
+}: {
+  component: ComponentSchema;
+  disabled: boolean;
+  value: unknown;
+  onChange: (value: unknown) => void;
+}) {
+  const props = component.props ?? {};
+  const [upload, setUpload] = useState<UploadResponse | null>(() => (isUploadResponse(value) ? value : null));
+  const [error, setError] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+
+  const recorder = useAudioRecorder({
+    onBlob: async (blob, mimeType) => {
+      const file = new File([blob], `recording${extensionFromMime(mimeType)}`, { type: mimeType });
+      await persistUpload(file);
+    },
+    onError: (message) => setError(message),
+  });
+
+  async function persistUpload(file: File) {
+    setError(null);
+    setIsUploading(true);
+    try {
+      const result = await uploadFile(file);
+      setUpload(result);
+      onChange(result);
+    } catch (uploadError) {
+      setError(errorMessage(uploadError));
+    } finally {
+      setIsUploading(false);
+    }
+  }
+
+  async function onFileChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    await persistUpload(file);
+  }
+
+  return (
+    <Field data-disabled={disabled || undefined}>
+      <FieldLabel htmlFor={component.id}>{component.label}</FieldLabel>
+      <div className="flex flex-wrap gap-3">
+        <Input
+          id={component.id}
+          aria-label={component.label}
+          accept={stringProp(props.accept) ?? "audio/*"}
+          disabled={disabled || isUploading || props.disabled === true}
+          type="file"
+          onChange={(event) => void onFileChange(event)}
+        />
+        <Button type="button" variant="secondary" disabled={disabled || isUploading || recorder.isRecording} onClick={() => void recorder.start()}>
+          <Mic data-icon="inline-start" />
+          Record
+        </Button>
+        <Button type="button" variant="outline" disabled={!recorder.isRecording} onClick={() => recorder.stop()}>
+          <Square data-icon="inline-start" />
+          Stop recording
+        </Button>
+      </div>
+      {isUploading ? <FieldDescription>Uploading...</FieldDescription> : null}
+      {upload ? <AudioPreview label={`${component.label} preview`} asset={upload} /> : null}
+      {error ? <FieldDescription className="text-destructive">{error}</FieldDescription> : null}
     </Field>
   );
 }
@@ -463,6 +755,18 @@ function OutputBlock({ component, value }: { component: ComponentSchema; value: 
     return null;
   }
 
+  if (component.type === "audio" && isUploadResponse(value)) {
+    return (
+      <section className="rounded-[1.25rem] border bg-background/80 p-4 shadow-sm">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold">{component.label}</h3>
+          <span className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{component.type}</span>
+        </div>
+        <AudioPreview label={`${component.label} preview`} asset={value} />
+      </section>
+    );
+  }
+
   const content =
     component.type === "json" || typeof value === "object" ? JSON.stringify(value ?? "", null, 2) : String(value ?? "");
 
@@ -474,6 +778,21 @@ function OutputBlock({ component, value }: { component: ComponentSchema; value: 
       </div>
       <pre className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground/90">{content}</pre>
     </section>
+  );
+}
+
+function AudioPreview({ label, asset }: { label: string; asset: UploadResponse }) {
+  return (
+    <div className="flex flex-col gap-3 rounded-2xl border bg-muted/40 p-3 shadow-sm">
+      <div className="flex items-center gap-2 text-sm">
+        <FileAudio data-icon="inline-start" />
+        <span className="font-medium">{asset.name}</span>
+        <span className="text-muted-foreground">
+          {asset.size} B {asset.content_type}
+        </span>
+      </div>
+      {asset.url ? <audio aria-label={label} controls src={asset.url} /> : null}
+    </div>
   );
 }
 
@@ -572,6 +891,122 @@ function outputShowcaseInputs(components: ComponentSchema[]) {
   return [first, dropdown, last].filter((component): component is ComponentSchema => component !== undefined);
 }
 
+function useAudioRecorder({
+  onBlob,
+  onError,
+}: {
+  onBlob: (blob: Blob, mimeType: string) => Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const [isRecording, setIsRecording] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
+
+  async function start() {
+    if (!supportsAudioRecording()) {
+      onError("Audio recording is not supported in this browser.");
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      chunksRef.current = [];
+      const recorder = new MediaRecorder(stream);
+      recorderRef.current = recorder;
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunksRef.current.push(event.data);
+        }
+      };
+      recorder.onstop = () => {
+        const mimeType = recorder.mimeType || "audio/webm";
+        const blob = new Blob(chunksRef.current, { type: mimeType });
+        setIsRecording(false);
+        stream.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+        void onBlob(blob, mimeType).catch((error) => onError(errorMessage(error)));
+      };
+      recorder.start();
+      setIsRecording(true);
+    } catch (error) {
+      onError(errorMessage(error));
+    }
+  }
+
+  function stop() {
+    recorderRef.current?.stop();
+  }
+
+  return { isRecording, start, stop };
+}
+
+function useStreamingAudioRecorder({
+  onChunk,
+  onStop,
+  onError,
+}: {
+  onChunk: (blob: Blob, mimeType: string) => Promise<void>;
+  onStop: () => Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
+
+  async function start() {
+    if (!supportsAudioRecording()) {
+      onError("Audio recording is not supported in this browser.");
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const recorder = new MediaRecorder(stream);
+      recorderRef.current = recorder;
+      recorder.ondataavailable = (event) => {
+        if (event.data.size === 0) {
+          return;
+        }
+
+        const mimeType = recorder.mimeType || "audio/webm";
+        void onChunk(event.data, mimeType).catch((error) => onError(errorMessage(error)));
+      };
+      recorder.onstop = () => {
+        setIsRecording(false);
+        stream.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+        recorderRef.current = null;
+        void onStop().catch((error) => onError(errorMessage(error)));
+      };
+      recorder.start(250);
+      setIsRecording(true);
+    } catch (error) {
+      onError(errorMessage(error));
+    }
+  }
+
+  function stop() {
+    recorderRef.current?.stop();
+  }
+
+  return { isRecording, start, stop };
+}
+
 function isUploadResponse(value: unknown): value is UploadResponse {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -596,4 +1031,31 @@ function stringProp(value: unknown): string | undefined {
 
 function numberProp(value: unknown): number | undefined {
   return typeof value === "number" ? value : undefined;
+}
+
+function supportsAudioRecording() {
+  return typeof window !== "undefined" && typeof MediaRecorder !== "undefined" && Boolean(navigator.mediaDevices?.getUserMedia);
+}
+
+function extensionFromMime(mimeType: string) {
+  switch (mimeType) {
+    case "audio/wav":
+      return ".wav";
+    case "audio/mp3":
+    case "audio/mpeg":
+      return ".mp3";
+    default:
+      return ".webm";
+  }
+}
+
+async function blobToBase64(blob: Blob) {
+  const buffer =
+    typeof blob.arrayBuffer === "function" ? await blob.arrayBuffer() : await new Response(blob).arrayBuffer();
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
 }

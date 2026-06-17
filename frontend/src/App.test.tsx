@@ -84,6 +84,227 @@ describe("Goleo frontend", () => {
     expect(screen.getByText("5 B text/plain")).toBeInTheDocument();
   });
 
+  it("renders audio inputs as media controls instead of a textarea", async () => {
+    mockedAPI.loadSchema.mockResolvedValue(audioSchema());
+    mockedAPI.uploadFile.mockResolvedValue({
+      id: "asset-audio-1",
+      name: "prompt.wav",
+      size: 5,
+      content_type: "audio/wav",
+      url: "/api/assets/asset-audio-1",
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Record" })).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Prompt audio" })).not.toBeInTheDocument();
+
+    const file = new File(["hello"], "prompt.wav", { type: "audio/wav" });
+    await user.upload(screen.getByLabelText("Prompt audio"), file);
+
+    expect(mockedAPI.uploadFile).toHaveBeenCalledWith(file);
+    expect(await screen.findByLabelText("Prompt audio preview")).toHaveAttribute("src", "/api/assets/asset-audio-1");
+  });
+
+  it("records audio from the microphone and uploads the captured blob", async () => {
+    mockedAPI.loadSchema.mockResolvedValue(audioSchema());
+    mockedAPI.uploadFile.mockResolvedValue({
+      id: "asset-audio-2",
+      name: "recording.webm",
+      size: 9,
+      content_type: "audio/webm",
+      url: "/api/assets/asset-audio-2",
+    });
+
+    const mediaStream = { getTracks: () => [{ stop: vi.fn() }] } as unknown as MediaStream;
+    const getUserMedia = vi.fn().mockResolvedValue(mediaStream);
+    vi.stubGlobal("navigator", {
+      mediaDevices: {
+        getUserMedia,
+      },
+    });
+
+    class MockMediaRecorder {
+      static instances: MockMediaRecorder[] = [];
+
+      ondataavailable: ((event: BlobEvent) => void) | null = null;
+      onstop: (() => void) | null = null;
+      mimeType = "audio/webm";
+      stream: MediaStream;
+
+      constructor(stream: MediaStream) {
+        this.stream = stream;
+        MockMediaRecorder.instances.push(this);
+      }
+
+      start() {}
+
+      stop() {
+        const blob = new Blob(["voice-data"], { type: this.mimeType });
+        this.ondataavailable?.({ data: blob } as BlobEvent);
+        this.onstop?.();
+      }
+    }
+
+    vi.stubGlobal("MediaRecorder", MockMediaRecorder as unknown as typeof MediaRecorder);
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Record" }));
+    expect(getUserMedia).toHaveBeenCalledWith({ audio: true });
+
+    await user.click(screen.getByRole("button", { name: /stop recording/i }));
+    expect(mockedAPI.uploadFile).toHaveBeenCalledTimes(1);
+    expect(await screen.findByLabelText("Prompt audio preview")).toHaveAttribute("src", "/api/assets/asset-audio-2");
+  });
+
+  it("renders audio outputs as playable media blocks", async () => {
+    mockedAPI.loadSchema.mockResolvedValue(audioSchema());
+    mockedAPI.predict.mockResolvedValue([
+      {
+        id: "asset-reply-1",
+        name: "reply.wav",
+        size: 5,
+        content_type: "audio/wav",
+        url: "/api/assets/asset-reply-1",
+      },
+    ]);
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    const file = new File(["hello"], "prompt.wav", { type: "audio/wav" });
+    mockedAPI.uploadFile.mockResolvedValue({
+      id: "asset-audio-1",
+      name: "prompt.wav",
+      size: 5,
+      content_type: "audio/wav",
+      url: "/api/assets/asset-audio-1",
+    });
+    await user.upload(await screen.findByLabelText("Prompt audio"), file);
+    await user.click(screen.getByRole("button", { name: /run/i }));
+
+    expect(await screen.findByLabelText("Reply audio preview")).toHaveAttribute("src", "/api/assets/asset-reply-1");
+  });
+
+  it("renders a voice session shell and reacts to text and audio websocket events", async () => {
+    mockedAPI.loadSchema.mockResolvedValue(voiceSchema());
+    const send = vi.fn();
+    const close = vi.fn();
+    let callbacks!: Parameters<typeof api.openVoiceSession>[1];
+    mockedAPI.openVoiceSession.mockImplementation((_, next) => {
+      callbacks = next;
+      return { send, close };
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: /connect voice/i }));
+
+    expect(mockedAPI.openVoiceSession).toHaveBeenCalledWith("voice-1", expect.any(Object));
+    expect(send).toHaveBeenCalledWith({ type: "session.start" });
+
+    callbacks.onEvent({ type: "session.ready" });
+    callbacks.onEvent({ type: "output.text", text: "heard hello" });
+    callbacks.onEvent({
+      type: "output.audio",
+      audio: {
+        id: "asset-reply-voice-1",
+        name: "reply.wav",
+        size: 5,
+        content_type: "audio/wav",
+        url: "/api/assets/asset-reply-voice-1",
+      },
+    });
+
+    expect(await screen.findByText("heard hello")).toBeInTheDocument();
+    expect(screen.getByLabelText("Voice reply preview")).toHaveAttribute("src", "/api/assets/asset-reply-voice-1");
+
+    await user.click(screen.getByRole("button", { name: /interrupt/i }));
+    expect(send).toHaveBeenCalledWith({ type: "output.interrupt" });
+
+    callbacks.onEvent({ type: "session.closed" });
+    expect(await screen.findByText("Voice session closed.")).toBeInTheDocument();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("streams microphone chunks to the voice session and sends input.stop on mute", async () => {
+    mockedAPI.loadSchema.mockResolvedValue(voiceSchema());
+    const send = vi.fn();
+    let callbacks!: Parameters<typeof api.openVoiceSession>[1];
+    mockedAPI.openVoiceSession.mockImplementation((_, next) => {
+      callbacks = next;
+      return { send, close: vi.fn() };
+    });
+
+    const mediaStream = { getTracks: () => [{ stop: vi.fn() }] } as unknown as MediaStream;
+    const getUserMedia = vi.fn().mockResolvedValue(mediaStream);
+    vi.stubGlobal("navigator", {
+      mediaDevices: {
+        getUserMedia,
+      },
+    });
+
+    class MockMediaRecorder {
+      static instances: MockMediaRecorder[] = [];
+
+      ondataavailable: ((event: BlobEvent) => void) | null = null;
+      onstop: (() => void) | null = null;
+      mimeType = "audio/webm";
+      stream: MediaStream;
+
+      constructor(stream: MediaStream) {
+        this.stream = stream;
+        MockMediaRecorder.instances.push(this);
+      }
+
+      start() {}
+
+      emitChunk(blob: Blob) {
+        this.ondataavailable?.({ data: blob } as BlobEvent);
+      }
+
+      stop() {
+        this.onstop?.();
+      }
+    }
+
+    vi.stubGlobal("MediaRecorder", MockMediaRecorder as unknown as typeof MediaRecorder);
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: /connect voice/i }));
+    callbacks.onEvent({ type: "session.ready" });
+
+    await user.click(screen.getByRole("button", { name: "Unmute mic" }));
+    expect(getUserMedia).toHaveBeenCalledWith({ audio: true });
+
+    MockMediaRecorder.instances[0]?.emitChunk({
+      size: 10,
+      arrayBuffer: vi.fn().mockResolvedValue(new TextEncoder().encode("voice-data").buffer),
+    } as unknown as Blob);
+    await waitFor(() =>
+      expect(send).toHaveBeenCalledWith({
+        type: "input.audio",
+        audio: {
+          mime_type: "audio/webm",
+          sequence: 1,
+          data: btoa("voice-data"),
+        },
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Mute mic" }));
+    await waitFor(() => expect(send).toHaveBeenCalledWith({ type: "input.stop" }));
+
+    await user.click(screen.getByRole("button", { name: /disconnect/i }));
+    expect(send).toHaveBeenCalledWith({ type: "session.close" });
+  });
+
   it("renders seeded showcase outputs and uploaded file metadata in readme demo mode", async () => {
     window.history.replaceState({}, "", "/?demo=readme-hero");
     mockedAPI.loadSchema.mockResolvedValue(showcaseFormSchema());
@@ -164,6 +385,41 @@ function fileSchema(): AppSchema {
         kind: "interface",
         inputs: [{ id: "interface-1-input-1", type: "file", label: "Document", props: {} }],
         outputs: [{ id: "interface-1-output-1", type: "json", label: "Result", props: {} }],
+      },
+    ],
+  };
+}
+
+function audioSchema(): AppSchema {
+  return {
+    version: "0.1.0",
+    interfaces: [
+      {
+        id: "interface-1",
+        kind: "interface",
+        inputs: [
+          {
+            id: "interface-1-input-1",
+            type: "audio",
+            label: "Prompt audio",
+            props: { accept: "audio/*" },
+          },
+        ],
+        outputs: [{ id: "interface-1-output-1", type: "audio", label: "Reply audio", props: {} }],
+      },
+    ],
+  };
+}
+
+function voiceSchema(): AppSchema {
+  return {
+    version: "0.1.0",
+    interfaces: [
+      {
+        id: "voice-1",
+        kind: "voice",
+        inputs: [],
+        outputs: [],
       },
     ],
   };

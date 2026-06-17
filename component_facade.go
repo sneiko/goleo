@@ -94,6 +94,10 @@ func Image(label string, options ...ComponentOption) Component {
 	return component.Image(label, options...)
 }
 
+func Audio(label string, options ...ComponentOption) Component {
+	return component.Audio(label, options...)
+}
+
 func File(label string, options ...ComponentOption) Component {
 	return component.File(label, options...)
 }

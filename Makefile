@@ -18,7 +18,9 @@ help:
 	@printf '%s\n' '  make readme-assets     Generate README screenshots'
 	@printf '%s\n' '  make check        Run fmt, vet, tests, frontend tests, and frontend build'
 	@printf '%s\n' '  make run-simple   Run examples/simple'
+	@printf '%s\n' '  make run-audio    Run examples/audio'
 	@printf '%s\n' '  make run-chat     Run examples/chat'
+	@printf '%s\n' '  make run-voice    Run examples/voice'
 	@printf '%s\n' '  make run-http     Run examples/http-wrapper'
 	@printf '%s\n' '  make run-showcase-form  Run examples/showcase-form'
 	@printf '%s\n' '  make run-showcase-chat  Run examples/showcase-chat'
@@ -66,9 +68,17 @@ readme-assets: frontend-build
 run-simple:
 	GOLEO_ADDR=$(GOLEO_ADDR) $(GO) run ./examples/simple
 
+.PHONY: run-audio
+run-audio:
+	GOLEO_ADDR=$(GOLEO_ADDR) $(GO) run ./examples/audio
+
 .PHONY: run-chat
 run-chat:
 	GOLEO_ADDR=$(GOLEO_ADDR) $(GO) run ./examples/chat
+
+.PHONY: run-voice
+run-voice:
+	GOLEO_ADDR=$(GOLEO_ADDR) $(GO) run ./examples/voice
 
 .PHONY: run-http
 run-http:

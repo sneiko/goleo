@@ -16,6 +16,10 @@ type App struct {
 	*core.App
 }
 
+type handlerCloser interface {
+	Close() error
+}
+
 // Option customizes an app during construction.
 type Option func(*App)
 
@@ -76,7 +80,9 @@ func (app *App) Launch(options LaunchOptions) error {
 	server := app.Server(options)
 	app.Logger().Info("starting goleo server", "addr", server.Addr)
 
-	return server.ListenAndServe()
+	err := server.ListenAndServe()
+	closeServerHandler(app.Logger(), server.Handler)
+	return err
 }
 
 // LaunchContext starts the app and gracefully shuts it down when ctx is canceled.
@@ -111,10 +117,22 @@ func (app *App) LaunchContext(ctx context.Context, options LaunchOptions) error 
 	}()
 
 	err := server.ListenAndServe()
+	closeServerHandler(logger, server.Handler)
 	if errors.Is(err, http.ErrServerClosed) {
 		<-shutdownDone
 		return nil
 	}
 
 	return err
+}
+
+func closeServerHandler(logger *slog.Logger, handler http.Handler) {
+	closer, ok := handler.(handlerCloser)
+	if !ok {
+		return
+	}
+
+	if err := closer.Close(); err != nil {
+		logger.Error("goleo server handler cleanup failed", "error", err)
+	}
 }

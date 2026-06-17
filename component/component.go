@@ -128,6 +128,10 @@ func Image(label string, options ...Option) Component {
 	return New("image", label, options...)
 }
 
+func Audio(label string, options ...Option) Component {
+	return New("audio", label, options...)
+}
+
 func File(label string, options ...Option) Component {
 	return New("file", label, options...)
 }

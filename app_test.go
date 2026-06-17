@@ -8,6 +8,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -108,6 +110,31 @@ func TestCustomComponentCanBeUsedInSchema(t *testing.T) {
 	}
 	if input.Props["source"] != "upload" {
 		t.Fatalf("source prop = %#v, want upload", input.Props["source"])
+	}
+}
+
+func TestAudioComponentCanBeUsedInSchema(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	app.Interface(
+		goleo.Handler(func(input goleo.AudioInput) (goleo.AudioOutput, error) {
+			return goleo.AudioOutput{}, nil
+		}),
+		goleo.Inputs(goleo.Audio("Prompt audio", goleo.WithAccept("audio/*"))),
+		goleo.Outputs(goleo.Audio("Reply audio")),
+	)
+
+	schema := app.Schema()
+
+	if got := schema.Interfaces[0].Inputs[0].Type; got != "audio" {
+		t.Fatalf("input type = %q, want audio", got)
+	}
+	if got := schema.Interfaces[0].Outputs[0].Type; got != "audio" {
+		t.Fatalf("output type = %q, want audio", got)
+	}
+	if got := schema.Interfaces[0].Inputs[0].Props["accept"]; got != "audio/*" {
+		t.Fatalf("accept = %#v, want audio/*", got)
 	}
 }
 
@@ -281,6 +308,175 @@ func TestUploadEndpointStoresFileMetadata(t *testing.T) {
 	}
 	if got.Name != "prompt.txt" || got.Size != 5 {
 		t.Fatalf("upload = %#v, want name prompt.txt and size 5", got)
+	}
+}
+
+func TestUploadEndpointStoresAssetAndServesIt(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "prompt.wav")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write([]byte("wave-data")); err != nil {
+		t.Fatalf("write form file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	resp, err := http.Post(server.URL+"/api/upload", writer.FormDataContentType(), &body)
+	if err != nil {
+		t.Fatalf("post upload: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var uploaded struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		Size        int64  `json:"size"`
+		ContentType string `json:"content_type"`
+		URL         string `json:"url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&uploaded); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if uploaded.ID == "" {
+		t.Fatal("uploaded id is empty")
+	}
+	if uploaded.URL == "" {
+		t.Fatal("uploaded url is empty")
+	}
+
+	assetResp, err := http.Get(server.URL + uploaded.URL)
+	if err != nil {
+		t.Fatalf("get asset: %v", err)
+	}
+	defer assetResp.Body.Close()
+
+	if assetResp.StatusCode != http.StatusOK {
+		t.Fatalf("asset status = %d, want %d", assetResp.StatusCode, http.StatusOK)
+	}
+
+	var assetBody bytes.Buffer
+	if _, err := assetBody.ReadFrom(assetResp.Body); err != nil {
+		t.Fatalf("read asset body: %v", err)
+	}
+	if got := assetBody.String(); got != "wave-data" {
+		t.Fatalf("asset body = %q, want wave-data", got)
+	}
+	if got := assetResp.Header.Get("Content-Type"); got == "" {
+		t.Fatal("asset content-type is empty")
+	}
+}
+
+func TestPredictEndpointHydratesAudioInputAndDehydratesAudioOutput(t *testing.T) {
+	t.Parallel()
+
+	outputDir := t.TempDir()
+	app := goleo.New()
+	app.Interface(
+		goleo.Handler(func(input goleo.AudioInput) (goleo.AudioOutput, error) {
+			payload, err := os.ReadFile(input.Path)
+			if err != nil {
+				return goleo.AudioOutput{}, err
+			}
+
+			outputPath := filepath.Join(outputDir, "reply.wav")
+			if err := os.WriteFile(outputPath, bytes.ToUpper(payload), 0o600); err != nil {
+				return goleo.AudioOutput{}, err
+			}
+
+			return goleo.AudioOutput{
+				Name:        "reply.wav",
+				ContentType: "audio/wav",
+				Path:        outputPath,
+			}, nil
+		}),
+		goleo.Inputs(goleo.Audio("Prompt audio", goleo.WithAccept("audio/*"))),
+		goleo.Outputs(goleo.Audio("Reply audio")),
+	)
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	var uploadBody bytes.Buffer
+	writer := multipart.NewWriter(&uploadBody)
+	part, err := writer.CreateFormFile("file", "prompt.wav")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write([]byte("voice")); err != nil {
+		t.Fatalf("write form file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	uploadResp, err := http.Post(server.URL+"/api/upload", writer.FormDataContentType(), &uploadBody)
+	if err != nil {
+		t.Fatalf("post upload: %v", err)
+	}
+	defer uploadResp.Body.Close()
+
+	var uploaded map[string]any
+	if err := json.NewDecoder(uploadResp.Body).Decode(&uploaded); err != nil {
+		t.Fatalf("decode upload response: %v", err)
+	}
+
+	predictBody, err := json.Marshal(map[string]any{
+		"interface_id": "interface-1",
+		"data":         []any{uploaded},
+	})
+	if err != nil {
+		t.Fatalf("marshal predict body: %v", err)
+	}
+
+	resp, err := http.Post(server.URL+"/api/predict", "application/json", bytes.NewReader(predictBody))
+	if err != nil {
+		t.Fatalf("post predict: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var got struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got.Data) != 1 {
+		t.Fatalf("len(data) = %d, want 1", len(got.Data))
+	}
+	if _, ok := got.Data[0]["url"].(string); !ok {
+		t.Fatalf("audio output = %#v, want url", got.Data[0])
+	}
+
+	assetResp, err := http.Get(server.URL + got.Data[0]["url"].(string))
+	if err != nil {
+		t.Fatalf("get asset: %v", err)
+	}
+	defer assetResp.Body.Close()
+
+	var assetBody bytes.Buffer
+	if _, err := assetBody.ReadFrom(assetResp.Body); err != nil {
+		t.Fatalf("read asset body: %v", err)
+	}
+	if got := assetBody.String(); got != "VOICE" {
+		t.Fatalf("asset body = %q, want VOICE", got)
 	}
 }
 

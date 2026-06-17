@@ -7,11 +7,13 @@
 [Architecture](docs/architecture.md) | [Examples](examples) | [Frontend](frontend)
 
 Goleo turns Go functions, streaming handlers, HTTP endpoints, OpenAI-compatible
-APIs, Ollama models, and local processes into embedded web apps.
+APIs, Ollama models, local processes, and full-duplex voice handlers into
+embedded web apps.
 
 Define inputs and outputs in Go, launch one binary, and get a usable local UI
-with prediction, streaming, and file upload endpoints. The built frontend is
-embedded into the Go binary, so there is no separate frontend deployment step.
+with prediction, streaming, upload, asset playback, and voice session
+endpoints. The built frontend is embedded into the Go binary, so there is no
+separate frontend deployment step.
 
 ![Goleo showcase hero](docs/assets/readme-hero.png)
 
@@ -45,7 +47,8 @@ The embedded UI supports typed form controls and structured outputs out of the
 box.
 
 Built-in constructors include `Textbox`, `Number`, `Slider`, `Checkbox`,
-`Dropdown`, `Button`, `Markdown`, `JSON`, `Image`, `File`, and `Chatbot`.
+`Dropdown`, `Button`, `Markdown`, `JSON`, `Image`, `Audio`, `File`, and
+`Chatbot`.
 
 You can also use `CustomComponent` when you need to introduce a schema type
 before a first-class constructor exists.
@@ -58,6 +61,62 @@ before a first-class constructor exists.
 <p align="center">
   <img src="docs/assets/readme-mobile.png" alt="Goleo mobile layout" width="34%">
 </p>
+
+## Audio and Voice
+
+Use `Interface` with `Audio(...)` when you want a normal request/response flow
+with upload or microphone capture. The handler receives a `goleo.AudioInput`
+with metadata plus a temporary `Path`. If the handler returns a
+`goleo.AudioOutput`, Goleo stores it and serves it back through
+`/api/assets/{id}` for browser playback.
+
+```go
+app.Interface(
+	goleo.Handler(func(clip goleo.AudioInput) (string, goleo.AudioOutput, error) {
+		return "received " + clip.Name, goleo.AudioOutput{
+			Name:        "reply.wav",
+			ContentType: clip.ContentType,
+			Path:        clip.Path,
+		}, nil
+	}),
+	goleo.Inputs(goleo.Audio("Prompt audio")),
+	goleo.Outputs(goleo.Textbox("Summary"), goleo.Audio("Reply audio")),
+)
+```
+
+Use `Voice` when you need a live session over WebSocket with microphone chunks,
+interrupts, and mixed text/audio output events. The browser connects to
+`/api/voice/{id}/ws`; your handler works with `session.Receive()`,
+`session.Send(...)`, and `session.SendAudio(...)`.
+
+```go
+app.Voice(goleo.VoiceHandler(func(session *goleo.VoiceSession) error {
+	for {
+		event, err := session.Receive()
+		if err != nil {
+			return err
+		}
+
+		switch event.Type {
+		case "session.start":
+			if err := session.Send(goleo.VoiceEvent{Type: "session.ready"}); err != nil {
+				return err
+			}
+		case "input.stop":
+			if err := session.Send(goleo.VoiceEvent{Type: "output.text", Text: "turn complete"}); err != nil {
+				return err
+			}
+		case "session.close":
+			return session.Send(goleo.VoiceEvent{Type: "session.closed"})
+		}
+	}
+}))
+```
+
+Choose the surface based on the interaction model:
+
+- `Interface + Audio`: turn-based upload or one-shot microphone capture.
+- `Voice`: long-lived duplex session with chunked mic input and interrupt.
 
 ## Installation
 
@@ -134,9 +193,11 @@ hello-world demo.
 
 | Command | Example | What it shows |
 | --- | --- | --- |
+| `make run-audio` | [`examples/audio`](examples/audio) | Turn-based audio upload or mic capture with text, JSON, and playback outputs |
 | `make run-showcase-form` | [`examples/showcase-form`](examples/showcase-form) | Typed form inputs, file upload, text output, and structured JSON |
 | `make run-showcase-chat` | [`examples/showcase-chat`](examples/showcase-chat) | Streaming chat transcript with a copilot-style response |
 | `make run-showcase-adapters` | [`examples/showcase-adapters`](examples/showcase-adapters) | Adapter-oriented prompt flow with backend metadata |
+| `make run-voice` | [`examples/voice`](examples/voice) | Full-duplex voice session with mic chunks, interrupt, and reply audio |
 
 ## More Examples
 
@@ -146,6 +207,8 @@ The repository keeps the focused integration demos as separate entry points.
 | --- | --- | --- |
 | `make run-simple` | [`examples/simple`](examples/simple) | Minimal function-backed form |
 | `make run-chat` | [`examples/chat`](examples/chat) | Basic streaming chat surface |
+| `make run-audio` | [`examples/audio`](examples/audio) | First-class `Audio` component with app-served playback assets |
+| `make run-voice` | [`examples/voice`](examples/voice) | WebSocket voice runtime with `VoiceHandler` |
 | `make run-http` | [`examples/http-wrapper`](examples/http-wrapper) | Wrap an HTTP endpoint |
 | `OLLAMA_MODEL=llama3.2 make run-ollama` | [`examples/ollama`](examples/ollama) | Stream from Ollama |
 | `OPENAI_BASE_URL=http://localhost:11434/v1 OPENAI_MODEL=llama3.2 make run-openai-stream` | [`examples/openai-stream`](examples/openai-stream) | Stream from any OpenAI-compatible API |
@@ -165,6 +228,35 @@ Run the bundled chat demo:
 
 ```sh
 make run-chat
+```
+
+## Voice Sessions
+
+Use `Voice` for true duplex audio sessions where the browser streams microphone
+chunks to your handler and the handler emits back text, state, and audio
+events.
+
+Browser -> server events in v1:
+
+- `session.start`
+- `input.audio`
+- `input.stop`
+- `output.interrupt`
+- `session.close`
+
+Server -> browser events in v1:
+
+- `session.ready`
+- `output.text`
+- `output.audio`
+- `output.state`
+- `error`
+- `session.closed`
+
+Run the bundled duplex demo:
+
+```sh
+make run-voice
 ```
 
 ## Wrapping APIs and Processes
@@ -276,8 +368,11 @@ This is an MVP implementation focused on Gradio-style local AI demos:
 
 - `Interface` for function-backed forms
 - `Chat` for streaming chat demos
+- `Voice` for WebSocket duplex sessions
+- `Audio` for upload and microphone-driven media inputs/outputs
 - Embedded frontend assets served by the Go binary
-- JSON prediction endpoint, SSE streaming endpoint, and file upload endpoint
+- JSON prediction endpoint, SSE streaming endpoint, upload endpoint, asset
+  endpoint, and voice WebSocket endpoint
 - Native Go, HTTP, OpenAI-compatible, Ollama, streaming, and process adapters
 - Optional structured logging with request IDs
 
@@ -290,8 +385,9 @@ The root `goleo` package is a facade over focused packages:
 
 - `component`: component schema and constructors
 - `core`: app model and schema generation
+- `media`: handler-facing audio types and browser-safe asset descriptors
 - `runtime`: handler binding and streaming abstraction
-- `server`: HTTP routes, uploads, SSE, embedded frontend
+- `server`: HTTP routes, uploads, assets, SSE, voice sessions, embedded frontend
 - `adapter`: HTTP, OpenAI-compatible, Ollama, and process adapters
 
 See [docs/architecture.md](docs/architecture.md) for extension points.
