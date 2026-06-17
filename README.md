@@ -4,7 +4,7 @@
 [![Frontend](https://img.shields.io/badge/frontend-React%20%2B%20Vite-646CFF?logo=vite)](frontend)
 [![Status](https://img.shields.io/badge/status-MVP-orange)](#status)
 
-[Architecture](docs/architecture.md) | [Examples](examples) | [Frontend](frontend)
+[Usage](docs/usage.md) | [Components](docs/components.md) | [Architecture](docs/architecture.md) | [Examples](examples) | [Frontend](frontend)
 
 Goleo turns Go functions, streaming handlers, HTTP endpoints, OpenAI-compatible
 APIs, Ollama models, local processes, and full-duplex voice handlers into

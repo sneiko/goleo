@@ -1,0 +1,188 @@
+# Component Guide
+
+This guide lists all built-in components and how to use them in `Inputs(...)` and
+`Outputs(...)`.
+
+## Component model
+
+Every component in `goleo` is emitted as schema JSON for frontend rendering:
+
+- `type`: component name.
+- `label`: user-facing text.
+- `props`: optional metadata and UI options.
+- `choices`: selection options for dropdown-like components.
+
+Useful factory functions are exported at package level:
+
+`Textbox`, `Number`, `Slider`, `Checkbox`, `Dropdown`, `Button`, `Markdown`,
+`JSON`, `Image`, `Audio`, `File`, `Chatbot`, `CustomComponent`.
+
+Use `Inputs(...)` and `Outputs(...)` to pass ordered lists into an `Interface`.
+
+## Shared options
+
+- `WithProp(key, value)` for arbitrary renderer props.
+- `WithChoices(values...)` for `Dropdown`.
+- `WithPlaceholder(value)` for text-like fields.
+- `WithDefault(value)` for initial value.
+- `WithMin`, `WithMax`, `WithStep` for numeric controls.
+- `WithRows(value)` to set multiline rows.
+- `WithDisabled(value)` and `WithVisible(value)`.
+- `WithAccept(value)` for mime/type filters on file-like inputs.
+- `WithMultiple(value)` for file-like multi-select.
+
+## Built-ins
+
+### Textbox
+
+Input/output component for plain text.
+
+- Typical use: prompts, summaries, labels.
+- Input-oriented options:
+  - `WithPlaceholder`
+  - `WithDefault`
+  - `WithRows`
+- Works as both input and output component.
+
+### Number
+
+Numeric input for integers and decimals.
+
+- Typical use: parameters like temperature, seed, confidence.
+- Supports `WithDefault`, `WithMin`, `WithMax`, `WithStep`.
+
+### Slider
+
+Continuous/step-based range input.
+
+- Typical use: tunable ranges in bounded space.
+- Supports `WithMin`, `WithMax`, `WithStep`, `WithDefault`.
+
+### Checkbox
+
+Boolean input.
+
+- Typical use: flags, toggles, enable/disable behavior.
+- Supports `WithDefault`.
+
+### Dropdown
+
+Single-choice selector.
+
+- Pass choices as second variadic list: `goleo.Dropdown("Label", "a", "b", "c")`.
+- Use `WithDefault` for default selected item.
+
+### Button
+
+Action-like control.
+
+- Backend contract is currently renderer-driven; the server-side contract is
+  defined by frontend behavior and may be used for form interactions.
+
+### Markdown
+
+Read-only text rendering.
+
+- Use for instructions, status headings, section separators.
+- Works well as output component.
+
+### JSON
+
+Structured object rendering.
+
+- Typical use: model metadata, nested map output, diagnostics payload.
+
+### Image
+
+Image output/input component.
+
+- Use as image output for generated image URLs or paths passed through output
+  handling.
+- File-like options can be used where supported by front-end implementation.
+
+### Audio
+
+First-class media component for input and output.
+
+- Input behavior:
+  - file upload and microphone capture map into one value contract.
+  - handler-side value is `goleo.AudioInput`.
+  - set `WithAccept("audio/*")` or a stricter value to filter browser file picker.
+- Output behavior:
+  - return `goleo.AudioOutput` from handler.
+  - runtime returns `AudioAsset` descriptor with `/api/assets/{id}` URL.
+- Typical use:
+  - transcription inputs,
+  - generated replies,
+  - preview playback in forms.
+
+### File
+
+Generic file upload input.
+
+- Handler receives path-backed input descriptors and can read payload through the
+  local `Path` field.
+- Supports `WithAccept`, `WithMultiple`.
+- Common use: PDFs, CSV, images, archives.
+
+### Chatbot
+
+Output list for chat transcript in `Chat`.
+
+- `Chat` creates this implicitly with label `Chat`.
+- For custom chat surfaces, pass manually in interface definitions where needed.
+
+### CustomComponent
+
+`CustomComponent(kind, label, options...)` lets you register a non-standard type.
+
+- Works for front-end extensions and experimental integrations.
+- Use the same `kind` string expected by your frontend implementation.
+
+## Inputs vs outputs
+
+`goleo.Interface` accepts both input and output arrays explicitly:
+
+- use outputs for fields you expect from the handler.
+- inputs control what data frontend sends to handler.
+
+`Chat` and `Voice` are opinionated surfaces with fixed behavior:
+
+- `Chat`: only one textbox input and one chatbot output are used.
+- `Voice`: no static input/output components; events are sent through websocket
+  event loop.
+
+## Value shapes and mapping
+
+### Plain values
+
+Standard Go types convert through JSON encoding/decoding:
+
+- `string`, `bool`, `int`, `float64`, structs, maps, slices.
+- custom struct types are supported through standard JSON unmarshal into typed args.
+
+### Audio value shape
+
+`Audio` input handler signature should use `goleo.AudioInput`.
+
+- `ID`, `Name`, `Size`, `ContentType`, `Path`, `URL`.
+- `Path` is server local and exists while the asset is in store.
+
+### Recommended mapping pattern
+
+- one return value per output component index;
+- when output is `Audio`, return `goleo.AudioOutput` and optional `error`.
+
+## Best practices
+
+- Keep output count aligned with the output component count.
+- Keep labels short and specific.
+- Prefer semantic labels over technical field names.
+- Add `WithDisabled(true)` while an interface is intentionally readonly.
+- For media components, avoid relying on local filesystem paths on client side; always
+  consume returned asset URLs.
+
+## Related docs
+
+- [Usage guide](usage.md)
+- [Architecture](architecture.md)
