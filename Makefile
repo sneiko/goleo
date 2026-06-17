@@ -12,12 +12,15 @@ help:
 	@printf '%s\n' '  make test         Run Go tests'
 	@printf '%s\n' '  make vet          Run go vet'
 	@printf '%s\n' '  make frontend-install  Install frontend dependencies'
+	@printf '%s\n' '  make frontend-dev      Run the frontend dev server'
 	@printf '%s\n' '  make frontend-test     Run frontend tests'
 	@printf '%s\n' '  make frontend-build    Build embedded frontend assets'
-	@printf '%s\n' '  make check        Run fmt, vet, and tests'
+	@printf '%s\n' '  make check        Run fmt, vet, tests, frontend tests, and frontend build'
 	@printf '%s\n' '  make run-simple   Run examples/simple'
 	@printf '%s\n' '  make run-chat     Run examples/chat'
 	@printf '%s\n' '  make run-http     Run examples/http-wrapper'
+	@printf '%s\n' '  make run-ollama   Run examples/ollama'
+	@printf '%s\n' '  make run-openai-stream  Run examples/openai-stream'
 	@printf '%s\n' '  make smoke        Run a local HTTP smoke test'
 
 .PHONY: fmt
@@ -39,6 +42,10 @@ check: fmt vet test frontend-test frontend-build
 frontend-install:
 	$(PNPM) --dir frontend install
 
+.PHONY: frontend-dev
+frontend-dev:
+	$(PNPM) --dir frontend dev
+
 .PHONY: frontend-test
 frontend-test:
 	$(PNPM) --dir frontend test
@@ -59,9 +66,15 @@ run-chat:
 run-http:
 	GOLEO_ADDR=$(GOLEO_ADDR) $(GO) run ./examples/http-wrapper
 
-.PHONY: openai-stream
-openai-stream:
+.PHONY: run-ollama
+run-ollama:
+	GOLEO_ADDR=$(GOLEO_ADDR) $(GO) run ./examples/ollama
+
+.PHONY: run-openai-stream openai-stream
+run-openai-stream:
 	GOLEO_ADDR=$(GOLEO_ADDR) $(GO) run ./examples/openai-stream
+
+openai-stream: run-openai-stream
 
 .PHONY: smoke
 smoke:

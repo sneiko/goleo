@@ -34,19 +34,26 @@ func main() {
 Run the simple example:
 
 ```sh
-go run ./examples/simple
+make run-simple
+```
+
+Makefile demo targets bind examples to `:7871` by default. Override the port
+with `GOLEO_ADDR` when needed:
+
+```sh
+make run-chat GOLEO_ADDR=:7872
 ```
 
 Run a local Ollama streaming chat demo:
 
 ```sh
-OLLAMA_MODEL=llama3.2 go run ./examples/ollama
+OLLAMA_MODEL=llama3.2 make run-ollama
 ```
 
 Run a generic OpenAI-compatible streaming chat demo:
 
 ```sh
-OPENAI_BASE_URL=http://localhost:11434/v1 OPENAI_MODEL=llama3.2 go run ./examples/openai-stream
+OPENAI_BASE_URL=http://localhost:11434/v1 OPENAI_MODEL=llama3.2 make run-openai-stream
 ```
 
 Configure HTTP server timeouts when needed:
@@ -78,7 +85,8 @@ srv := app.Server(goleo.LaunchOptions{Addr: ":7860"})
 err := srv.ListenAndServe()
 ```
 
-Then open `http://localhost:7860`.
+Then open `http://localhost:7860` for direct `go run` examples, or
+`http://localhost:7871` for Makefile demo targets.
 
 ## Frontend development
 
@@ -88,13 +96,13 @@ Goleo is still Go-first: the built frontend is committed under
 The embedded UI is developed as a React/Vite/shadcn frontend in `frontend`:
 
 ```sh
-pnpm --dir frontend install
-pnpm --dir frontend dev
-pnpm --dir frontend test
-pnpm --dir frontend build
+make frontend-install
+make frontend-dev
+make frontend-test
+make frontend-build
 ```
 
-`pnpm --dir frontend build` writes the static assets consumed by Go's
+`make frontend-build` writes the static assets consumed by Go's
 `go:embed`. Run it after changing frontend code.
 
 Component constructors accept typed options for common UI props:
