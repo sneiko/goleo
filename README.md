@@ -80,6 +80,23 @@ err := srv.ListenAndServe()
 
 Then open `http://localhost:7860`.
 
+## Frontend development
+
+Goleo is still Go-first: the built frontend is committed under
+`server/assets`, so users can run examples without installing Node.js.
+
+The embedded UI is developed as a React/Vite/shadcn frontend in `frontend`:
+
+```sh
+pnpm --dir frontend install
+pnpm --dir frontend dev
+pnpm --dir frontend test
+pnpm --dir frontend build
+```
+
+`pnpm --dir frontend build` writes the static assets consumed by Go's
+`go:embed`. Run it after changing frontend code.
+
 Component constructors accept typed options for common UI props:
 
 ```go

@@ -1,6 +1,7 @@
 SHELL := /bin/sh
 
 GO ?= go
+PNPM ?= pnpm
 GOLEO_ADDR ?= :7871
 SMOKE_URL ?= http://127.0.0.1:7871
 
@@ -10,6 +11,9 @@ help:
 	@printf '%s\n' '  make fmt          Format Go files'
 	@printf '%s\n' '  make test         Run Go tests'
 	@printf '%s\n' '  make vet          Run go vet'
+	@printf '%s\n' '  make frontend-install  Install frontend dependencies'
+	@printf '%s\n' '  make frontend-test     Run frontend tests'
+	@printf '%s\n' '  make frontend-build    Build embedded frontend assets'
 	@printf '%s\n' '  make check        Run fmt, vet, and tests'
 	@printf '%s\n' '  make run-simple   Run examples/simple'
 	@printf '%s\n' '  make run-chat     Run examples/chat'
@@ -29,7 +33,19 @@ vet:
 	$(GO) vet ./...
 
 .PHONY: check
-check: fmt vet test
+check: fmt vet test frontend-test frontend-build
+
+.PHONY: frontend-install
+frontend-install:
+	$(PNPM) --dir frontend install
+
+.PHONY: frontend-test
+frontend-test:
+	$(PNPM) --dir frontend test
+
+.PHONY: frontend-build
+frontend-build:
+	$(PNPM) --dir frontend build
 
 .PHONY: run-simple
 run-simple:
@@ -42,6 +58,10 @@ run-chat:
 .PHONY: run-http
 run-http:
 	GOLEO_ADDR=$(GOLEO_ADDR) $(GO) run ./examples/http-wrapper
+
+.PHONY: openai-stream
+openai-stream:
+	GOLEO_ADDR=$(GOLEO_ADDR) $(GO) run ./examples/openai-stream
 
 .PHONY: smoke
 smoke:

@@ -1,1 +1,5 @@
 .DS_Store
+frontend/node_modules/
+frontend/*.tsbuildinfo
+frontend/*.d.ts
+frontend/*.js
