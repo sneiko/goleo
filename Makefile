@@ -1,0 +1,68 @@
+SHELL := /bin/sh
+
+GO ?= go
+GOLEO_ADDR ?= :7871
+SMOKE_URL ?= http://127.0.0.1:7871
+
+.PHONY: help
+help:
+	@printf '%s\n' 'Goleo development commands:'
+	@printf '%s\n' '  make fmt          Format Go files'
+	@printf '%s\n' '  make test         Run Go tests'
+	@printf '%s\n' '  make vet          Run go vet'
+	@printf '%s\n' '  make check        Run fmt, vet, and tests'
+	@printf '%s\n' '  make run-simple   Run examples/simple'
+	@printf '%s\n' '  make run-chat     Run examples/chat'
+	@printf '%s\n' '  make run-http     Run examples/http-wrapper'
+	@printf '%s\n' '  make smoke        Run a local HTTP smoke test'
+
+.PHONY: fmt
+fmt:
+	$(GO) fmt ./...
+
+.PHONY: test
+test:
+	$(GO) test ./...
+
+.PHONY: vet
+vet:
+	$(GO) vet ./...
+
+.PHONY: check
+check: fmt vet test
+
+.PHONY: run-simple
+run-simple:
+	GOLEO_ADDR=$(GOLEO_ADDR) $(GO) run ./examples/simple
+
+.PHONY: run-chat
+run-chat:
+	GOLEO_ADDR=$(GOLEO_ADDR) $(GO) run ./examples/chat
+
+.PHONY: run-http
+run-http:
+	GOLEO_ADDR=$(GOLEO_ADDR) $(GO) run ./examples/http-wrapper
+
+.PHONY: smoke
+smoke:
+	@set -eu; \
+	log_file=$$(mktemp); \
+	GOLEO_ADDR=$(GOLEO_ADDR) $(GO) run ./examples/simple > "$$log_file" 2>&1 & \
+	pid=$$!; \
+	trap 'kill $$pid >/dev/null 2>&1 || true; rm -f "$$log_file"' EXIT INT TERM; \
+	for attempt in 1 2 3 4 5 6 7 8 9 10; do \
+		if curl -fsS "$(SMOKE_URL)/api/schema" >/dev/null 2>&1; then \
+			break; \
+		fi; \
+		if ! kill -0 $$pid >/dev/null 2>&1; then \
+			cat "$$log_file"; \
+			exit 1; \
+		fi; \
+		sleep 0.5; \
+	done; \
+	curl -fsS "$(SMOKE_URL)/" | grep -q '<title>Goleo</title>'; \
+	curl -fsS "$(SMOKE_URL)/api/schema" | grep -q '"interface-1"'; \
+	curl -fsS -X POST "$(SMOKE_URL)/api/predict" \
+		-H 'Content-Type: application/json' \
+		-d '{"interface_id":"interface-1","data":["Smoke"]}' | grep -q 'Hello Smoke'; \
+	printf '%s\n' 'smoke ok'
