@@ -10,7 +10,7 @@ export type ComponentSchema = {
 export type EventSchema = {
   id: string;
   trigger: string;
-  source: string;
+  source?: string;
   inputs: string[];
   outputs: string[];
 };
@@ -38,7 +38,16 @@ export type ComponentUpdate = {
   label?: string;
 };
 
-export type EventResponseData = Record<string, unknown | ComponentUpdate>;
+export type EventComponentValue =
+  | string
+  | number
+  | boolean
+  | null
+  | unknown[]
+  | Record<string, unknown>
+  | ComponentUpdate;
+
+export type EventResponseData = Record<string, EventComponentValue>;
 
 export type UploadResponse = {
   id: string;

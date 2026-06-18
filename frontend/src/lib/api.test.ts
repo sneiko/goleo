@@ -72,8 +72,8 @@ describe("api client", () => {
         return new Response(
           JSON.stringify({
             data: {
-              output: "Done",
-              status: { kind: "update", value: "ready", disabled: false },
+              "blocks-1-component-3": "Done",
+              "blocks-1-component-4": { kind: "update", value: "ready", disabled: false },
             },
           }),
           {
@@ -84,19 +84,19 @@ describe("api client", () => {
       }),
     );
 
-    const result = await sendEvent("interface-1", "submit", { prompt: "Ada" });
+    const result = await sendEvent("blocks-1", "blocks-1-event-1", { "blocks-1-component-1": "Ada" });
 
     expect(result).toEqual({
-      output: "Done",
-      status: { kind: "update", value: "ready", disabled: false },
+      "blocks-1-component-3": "Done",
+      "blocks-1-component-4": { kind: "update", value: "ready", disabled: false },
     });
     expect(fetch).toHaveBeenCalledWith("/api/event", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        interface_id: "interface-1",
-        event_id: "submit",
-        data: { prompt: "Ada" },
+        interface_id: "blocks-1",
+        event_id: "blocks-1-event-1",
+        data: { "blocks-1-component-1": "Ada" },
       }),
     });
   });
