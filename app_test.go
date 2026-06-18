@@ -44,6 +44,50 @@ func TestUpdateHelpersBuildPointerFields(t *testing.T) {
 	}
 }
 
+func TestBlocksSchemaIncludesComponentsAndEvents(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	var prompt, run, out goleo.Component
+	app.Blocks(func(blocks *goleo.Blocks) {
+		prompt = blocks.Textbox("Prompt")
+		run = blocks.Button("Run")
+		out = blocks.Textbox("Result")
+
+		run.Click(
+			goleo.Handler(func(input string) (string, error) {
+				return strings.ToUpper(input), nil
+			}),
+			goleo.Inputs(prompt),
+			goleo.Outputs(out),
+		)
+	})
+
+	schema := app.Schema()
+	if len(schema.Interfaces) != 1 {
+		t.Fatalf("len(schema.Interfaces) = %d, want 1", len(schema.Interfaces))
+	}
+	iface := schema.Interfaces[0]
+	if iface.Kind != "blocks" {
+		t.Fatalf("kind = %q, want blocks", iface.Kind)
+	}
+	if len(iface.Components) != 3 {
+		t.Fatalf("len(components) = %d, want 3", len(iface.Components))
+	}
+	if len(iface.Events) != 1 {
+		t.Fatalf("len(events) = %d, want 1", len(iface.Events))
+	}
+	if iface.Events[0].Trigger != "click" || iface.Events[0].Source != run.ID {
+		t.Fatalf("event = %#v, want click from run", iface.Events[0])
+	}
+	if !reflect.DeepEqual(iface.Events[0].Inputs, []string{prompt.ID}) {
+		t.Fatalf("event inputs = %#v, want prompt id", iface.Events[0].Inputs)
+	}
+	if !reflect.DeepEqual(iface.Events[0].Outputs, []string{out.ID}) {
+		t.Fatalf("event outputs = %#v, want out id", iface.Events[0].Outputs)
+	}
+}
+
 func TestInterfaceSchemaIncludesComponents(t *testing.T) {
 	t.Parallel()
 

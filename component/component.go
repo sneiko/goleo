@@ -1,6 +1,10 @@
 package component
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/sneiko/goleo/runtime"
+)
 
 // Component describes a UI control that the frontend renderer can mount.
 type Component struct {
@@ -10,6 +14,31 @@ type Component struct {
 	Props   map[string]any `json:"props"`
 	Choices []string       `json:"choices,omitempty"`
 	Items   []Component    `json:"items,omitempty"`
+
+	eventBinder EventBinder
+}
+
+type EventBinder interface {
+	BindEvent(trigger string, source Component, handler *runtime.HandlerBinding, inputs List, outputs List)
+}
+
+func WithEventBinder(component Component, binder EventBinder) Component {
+	component.eventBinder = binder
+	return component
+}
+
+func (component Component) Click(handler *runtime.HandlerBinding, inputs List, outputs List) {
+	if component.eventBinder == nil {
+		return
+	}
+	component.eventBinder.BindEvent("click", component, handler, inputs, outputs)
+}
+
+func (component Component) Change(handler *runtime.HandlerBinding, inputs List, outputs List) {
+	if component.eventBinder == nil {
+		return
+	}
+	component.eventBinder.BindEvent("change", component, handler, inputs, outputs)
 }
 
 // Option customizes component metadata.

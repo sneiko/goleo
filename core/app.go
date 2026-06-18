@@ -45,10 +45,12 @@ type App struct {
 
 // Interface describes one callable UI surface.
 type Interface struct {
-	ID      string                `json:"id"`
-	Kind    string                `json:"kind"`
-	Inputs  []component.Component `json:"inputs"`
-	Outputs []component.Component `json:"outputs"`
+	ID         string                `json:"id"`
+	Kind       string                `json:"kind"`
+	Inputs     []component.Component `json:"inputs"`
+	Outputs    []component.Component `json:"outputs"`
+	Components []component.Component `json:"components,omitempty"`
+	Events     []EventBinding        `json:"events,omitempty"`
 
 	Handler      *runtime.HandlerBinding `json:"-"`
 	VoiceHandler *runtime.VoiceBinding   `json:"-"`
@@ -221,6 +223,28 @@ func (app *App) Voice(handler *runtime.VoiceBinding) {
 	})
 }
 
+func (app *App) Blocks(build func(*Blocks)) {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+
+	id := "blocks-" + strconv.Itoa(countKind(app.interfaces, "blocks")+1)
+	blocks := newBlocks(id)
+	if build != nil {
+		build(blocks)
+	}
+
+	components := assignComponentIDs(blocks.components, id+"-component")
+	app.states[id] = collectInitialStateValues(components)
+	app.interfaces = append(app.interfaces, Interface{
+		ID:         id,
+		Kind:       "blocks",
+		Inputs:     []component.Component{},
+		Outputs:    []component.Component{},
+		Components: components,
+		Events:     append([]EventBinding{}, blocks.events...),
+	})
+}
+
 // Schema returns a frontend-safe copy of the registered UI schema.
 func (app *App) Schema() Schema {
 	app.mu.RLock()
@@ -229,10 +253,12 @@ func (app *App) Schema() Schema {
 	interfaces := make([]Interface, 0, len(app.interfaces))
 	for _, iface := range app.interfaces {
 		interfaces = append(interfaces, Interface{
-			ID:      iface.ID,
-			Kind:    iface.Kind,
-			Inputs:  cloneComponents(iface.Inputs),
-			Outputs: cloneComponents(iface.Outputs),
+			ID:         iface.ID,
+			Kind:       iface.Kind,
+			Inputs:     cloneComponents(iface.Inputs),
+			Outputs:    cloneComponents(iface.Outputs),
+			Components: cloneComponents(iface.Components),
+			Events:     cloneEvents(iface.Events),
 		})
 	}
 
@@ -254,6 +280,19 @@ func (app *App) GetInterface(id string) (Interface, bool) {
 	}
 
 	return Interface{}, false
+}
+
+func (app *App) GetEvent(interfaceID, eventID string) (Interface, EventBinding, bool) {
+	iface, ok := app.GetInterface(interfaceID)
+	if !ok {
+		return Interface{}, EventBinding{}, false
+	}
+	for _, event := range iface.Events {
+		if event.ID == eventID {
+			return iface, event, true
+		}
+	}
+	return Interface{}, EventBinding{}, false
 }
 
 func (app *App) StateForInput(ifaceID, componentID string) (any, bool) {
@@ -320,6 +359,17 @@ func cloneComponents(components []component.Component) []component.Component {
 		result = append(result, item)
 	}
 
+	return result
+}
+
+func cloneEvents(events []EventBinding) []EventBinding {
+	result := make([]EventBinding, 0, len(events))
+	for _, event := range events {
+		event.Inputs = append([]string{}, event.Inputs...)
+		event.Outputs = append([]string{}, event.Outputs...)
+		event.Handler = nil
+		result = append(result, event)
+	}
 	return result
 }
 
