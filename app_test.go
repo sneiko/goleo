@@ -1183,6 +1183,76 @@ func TestEventEndpointReturnsUpdateEnvelope(t *testing.T) {
 	}
 }
 
+func TestEventEndpointDehydratesUpdateValueMediaOutput(t *testing.T) {
+	t.Parallel()
+
+	outputDir := t.TempDir()
+	outputPath := filepath.Join(outputDir, "reply.wav")
+	if err := os.WriteFile(outputPath, []byte("voice"), 0o600); err != nil {
+		t.Fatalf("write output audio: %v", err)
+	}
+
+	app := goleo.New()
+	var prompt, reply goleo.Component
+	app.Blocks(func(blocks *goleo.Blocks) {
+		prompt = blocks.Textbox("Prompt")
+		reply = blocks.Audio("Reply")
+		run := blocks.Button("Run")
+		run.Click(
+			goleo.Handler(func(input string) (goleo.Update, error) {
+				return goleo.Value(goleo.AudioOutput{
+					Name:        "reply.wav",
+					ContentType: "audio/wav",
+					Path:        outputPath,
+				}), nil
+			}),
+			goleo.Inputs(prompt),
+			goleo.Outputs(reply),
+		)
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	requestBody, err := json.Marshal(map[string]any{
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-1",
+		"data": map[string]any{
+			prompt.ID: "hello",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal event request: %v", err)
+	}
+	resp, err := http.Post(server.URL+"/api/event", "application/json", bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("post event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var got struct {
+		Data map[string]map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode event response: %v", err)
+	}
+	update := got.Data[reply.ID]
+	if update["kind"] != "update" {
+		t.Fatalf("update kind = %#v, want update", update["kind"])
+	}
+	value, ok := update["value"].(map[string]any)
+	if !ok {
+		t.Fatalf("update value = %#v, want asset descriptor", update["value"])
+	}
+	if value["url"] == "" || value["name"] != "reply.wav" {
+		t.Fatalf("asset descriptor = %#v, want url and reply.wav", value)
+	}
+}
+
 func TestEventEndpointQueueLimitReturnsError(t *testing.T) {
 	app := goleo.New()
 	app.ConfigureQueue(1, 0)

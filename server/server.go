@@ -381,8 +381,38 @@ func handleEvent(
 		}
 		defer release()
 
-		inputComponents := componentsByIDs(iface.Components, event.Inputs)
-		outputComponents := componentsByIDs(iface.Components, event.Outputs)
+		inputComponents, err := componentsByIDs(iface.Components, event.Inputs)
+		if err != nil {
+			errorRequest(
+				logger,
+				r,
+				"event input component binding invalid",
+				"interface_id",
+				request.InterfaceID,
+				"event_id",
+				request.EventID,
+				"error",
+				err,
+			)
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		outputComponents, err := componentsByIDs(iface.Components, event.Outputs)
+		if err != nil {
+			errorRequest(
+				logger,
+				r,
+				"event output component binding invalid",
+				"interface_id",
+				request.InterfaceID,
+				"event_id",
+				request.EventID,
+				"error",
+				err,
+			)
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 		requestData := valuesForComponents(inputComponents, request.Data)
 		requestData = mergeStateInputs(handlerContext, app, iface.ID, inputComponents, requestData)
 
@@ -992,7 +1022,7 @@ func updateStateFromOutputs(app *core.App, interfaceID string, outputs []compone
 	}
 }
 
-func componentsByIDs(components []component.Component, ids []string) []component.Component {
+func componentsByIDs(components []component.Component, ids []string) ([]component.Component, error) {
 	flatComponents := flattenLeafComponents(components)
 	byID := make(map[string]component.Component, len(flatComponents))
 	for _, item := range flatComponents {
@@ -1001,11 +1031,13 @@ func componentsByIDs(components []component.Component, ids []string) []component
 
 	result := make([]component.Component, 0, len(ids))
 	for _, id := range ids {
-		if item, ok := byID[id]; ok {
-			result = append(result, item)
+		item, ok := byID[id]
+		if !ok {
+			return nil, fmt.Errorf("component %q not found", id)
 		}
+		result = append(result, item)
 	}
-	return result
+	return result, nil
 }
 
 func valuesForComponents(components []component.Component, values map[string]any) []any {
