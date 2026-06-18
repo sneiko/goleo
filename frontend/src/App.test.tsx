@@ -345,6 +345,64 @@ describe("Goleo frontend", () => {
     expect(screen.getByText(/normalized handler binding/i)).toBeInTheDocument();
     expect(screen.getAllByText(/HTTP adapter/i).length).toBeGreaterThan(0);
   });
+
+  it("renders blocks components and sends click event payloads before applying output values", async () => {
+    mockedAPI.loadSchema.mockResolvedValue(blocksClickSchema());
+    mockedAPI.sendEvent.mockResolvedValue({ result: "Hello Ada" });
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await user.clear(await screen.findByLabelText("Name"));
+    await user.type(screen.getByLabelText("Name"), "Ada");
+    await user.click(screen.getByRole("button", { name: "Generate" }));
+
+    expect(mockedAPI.sendEvent).toHaveBeenCalledWith("blocks-1", "generate-click", { name: "Ada" });
+    expect(await screen.findByText("Hello Ada")).toBeInTheDocument();
+  });
+
+  it("applies blocks update envelopes to values and target button runtime state", async () => {
+    mockedAPI.loadSchema.mockResolvedValue(blocksClickSchema());
+    mockedAPI.sendEvent.mockResolvedValue({
+      result: { kind: "update", value: "Done" },
+      generate: { kind: "update", label: "Generated", disabled: true },
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Generate" }));
+
+    expect(await screen.findByText("Done")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generated" })).toBeDisabled();
+  });
+
+  it("runs blocks load events on mount and applies the response", async () => {
+    mockedAPI.loadSchema.mockResolvedValue(blocksLoadSchema());
+    mockedAPI.sendEvent.mockResolvedValue({ status: "Loaded from server" });
+
+    render(<App />);
+
+    await waitFor(() => expect(mockedAPI.sendEvent).toHaveBeenCalledWith("blocks-load", "load-status", {}));
+    expect(await screen.findByText("Loaded from server")).toBeInTheDocument();
+  });
+
+  it("dispatches blocks change events with component values", async () => {
+    mockedAPI.loadSchema.mockResolvedValue(blocksChangeSchema());
+    mockedAPI.sendEvent.mockResolvedValue({ preview: "Preview: abc" });
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await user.type(await screen.findByLabelText("Prompt"), "abc");
+
+    await waitFor(() =>
+      expect(mockedAPI.sendEvent).toHaveBeenLastCalledWith("blocks-change", "prompt-change", {
+        prompt: "abc",
+      }),
+    );
+    expect(await screen.findByText("Preview: abc")).toBeInTheDocument();
+  });
 });
 
 function interfaceSchema(): AppSchema {
@@ -561,6 +619,85 @@ function showcaseAdapterSchema(): AppSchema {
                 transport: "normalized handler binding",
               },
             },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function blocksClickSchema(): AppSchema {
+  return {
+    version: "0.1.0",
+    interfaces: [
+      {
+        id: "blocks-1",
+        kind: "blocks",
+        inputs: [],
+        outputs: [],
+        components: [
+          {
+            id: "main",
+            type: "group",
+            label: "Generator",
+            props: {},
+            items: [
+              { id: "name", type: "textbox", label: "Name", props: { default: "Grace" } },
+              { id: "generate", type: "button", label: "Generate", props: {} },
+              { id: "result", type: "textbox", label: "Result", props: {} },
+            ],
+          },
+        ],
+        events: [
+          {
+            id: "generate-click",
+            trigger: "click",
+            source: "generate",
+            inputs: ["name"],
+            outputs: ["result"],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function blocksLoadSchema(): AppSchema {
+  return {
+    version: "0.1.0",
+    interfaces: [
+      {
+        id: "blocks-load",
+        kind: "blocks",
+        inputs: [],
+        outputs: [],
+        components: [{ id: "status", type: "textbox", label: "Status", props: {} }],
+        events: [{ id: "load-status", trigger: "load", inputs: [], outputs: ["status"] }],
+      },
+    ],
+  };
+}
+
+function blocksChangeSchema(): AppSchema {
+  return {
+    version: "0.1.0",
+    interfaces: [
+      {
+        id: "blocks-change",
+        kind: "blocks",
+        inputs: [],
+        outputs: [],
+        components: [
+          { id: "prompt", type: "textbox", label: "Prompt", props: {} },
+          { id: "preview", type: "textbox", label: "Preview", props: {} },
+        ],
+        events: [
+          {
+            id: "prompt-change",
+            trigger: "change",
+            source: "prompt",
+            inputs: ["prompt"],
+            outputs: ["preview"],
           },
         ],
       },

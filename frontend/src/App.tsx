@@ -23,13 +23,16 @@ import {
   loadSchema,
   openVoiceSession,
   cancelRequest,
+  sendEvent,
   streamWithEvents,
   uploadFile,
   predict,
 } from "@/lib/api";
 import type {
   AppSchema,
+  ComponentUpdate,
   ComponentSchema,
+  EventSchema,
   InterfaceSchema,
   StreamEvent,
   UploadResponse,
@@ -115,6 +118,8 @@ export default function App() {
             <ChatInterface key={iface.id} iface={iface} demoMode={demoMode} />
           ) : iface.kind === "voice" ? (
             <VoiceInterface key={iface.id} iface={iface} />
+          ) : iface.kind === "blocks" ? (
+            <BlocksInterface key={iface.id} iface={iface} />
           ) : (
             <FormInterface key={iface.id} iface={iface} demoMode={demoMode} />
           ),
@@ -222,6 +227,280 @@ function FormInterface({ iface, demoMode }: { iface: InterfaceSchema; demoMode: 
         </CardFooter>
       </form>
     </Card>
+  );
+}
+
+type ComponentRuntimeState = {
+  visible?: boolean;
+  disabled?: boolean;
+  choices?: string[];
+  label?: string;
+};
+
+function BlocksInterface({ iface }: { iface: InterfaceSchema }) {
+  const components = iface.components ?? [];
+  const events = iface.events ?? [];
+  const leafComponents = useMemo(() => flattenLeafComponents(components), [components]);
+  const componentByID = useMemo(() => new Map(leafComponents.map((component) => [component.id, component])), [leafComponents]);
+  const eventInputIDs = useMemo(() => new Set(events.flatMap((event) => event.inputs)), [events]);
+  const eventOutputIDs = useMemo(() => new Set(events.flatMap((event) => event.outputs)), [events]);
+  const loadEvents = useMemo(
+    () => events.filter((event) => event.source === undefined || event.trigger === "load"),
+    [events],
+  );
+  const [values, setValues] = useInitialValues(leafComponents);
+  const [runtime, setRuntime] = useState<Record<string, ComponentRuntimeState>>({});
+  const [error, setError] = useState<string | null>(null);
+  const [runningSources, setRunningSources] = useState<Set<string>>(() => new Set());
+  const sentLoadEventsRef = useRef(false);
+
+  function applyEventResponse(response: Record<string, unknown>) {
+    const nextValues: Values = {};
+    const nextRuntime: Record<string, ComponentRuntimeState> = {};
+
+    for (const [componentID, result] of Object.entries(response)) {
+      if (isComponentUpdate(result)) {
+        if (result.value !== undefined) {
+          nextValues[componentID] = result.value;
+        }
+        const runtimeUpdate = componentRuntimeUpdate(result);
+        if (runtimeUpdate) {
+          nextRuntime[componentID] = runtimeUpdate;
+        }
+        continue;
+      }
+
+      nextValues[componentID] = result;
+    }
+
+    if (Object.keys(nextValues).length > 0) {
+      setValues((current) => ({ ...current, ...nextValues }));
+    }
+
+    if (Object.keys(nextRuntime).length > 0) {
+      setRuntime((current) => {
+        const merged = { ...current };
+        for (const [componentID, update] of Object.entries(nextRuntime)) {
+          merged[componentID] = { ...merged[componentID], ...update };
+        }
+        return merged;
+      });
+    }
+  }
+
+  async function runBlockEvent(event: EventSchema, sourceID: string | undefined, nextValues: Values = values) {
+    setError(null);
+    if (sourceID) {
+      setRunningSources((current) => new Set(current).add(sourceID));
+    }
+
+    try {
+      const response = await sendEvent(
+        iface.id,
+        event.id,
+        blockEventPayload(event, nextValues, componentByID, runtime),
+      );
+      applyEventResponse(response);
+    } catch (eventError) {
+      setError(errorMessage(eventError));
+    } finally {
+      if (sourceID) {
+        setRunningSources((current) => {
+          const next = new Set(current);
+          next.delete(sourceID);
+          return next;
+        });
+      }
+    }
+  }
+
+  useEffect(() => {
+    if (sentLoadEventsRef.current) {
+      return;
+    }
+    sentLoadEventsRef.current = true;
+    for (const event of loadEvents) {
+      void runBlockEvent(event, event.source);
+    }
+  }, [loadEvents]);
+
+  return (
+    <Card className="overflow-hidden border-border/80 shadow-sm">
+      <CardHeader className="border-b bg-card/70">
+        <CardTitle>Blocks</CardTitle>
+        <CardDescription>{iface.id}</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-5 pt-6">
+        {renderBlocksComponents(components, {
+          eventInputIDs,
+          eventOutputIDs,
+          onButtonClick: (component) => {
+            for (const event of events.filter((candidate) => candidate.trigger === "click" && candidate.source === component.id)) {
+              void runBlockEvent(event, component.id);
+            }
+          },
+          onValueChange: (component, value) => {
+            const nextValues = { ...values, [component.id]: value };
+            setValues(nextValues);
+            for (const event of events.filter((candidate) => candidate.trigger === "change" && candidate.source === component.id)) {
+              void runBlockEvent(event, component.id, nextValues);
+            }
+          },
+          runningSources,
+          runtime,
+          values,
+        })}
+        {error ? <ErrorAlert title="Event failed" message={error} /> : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function renderBlocksComponents(
+  components: ComponentSchema[],
+  context: {
+    eventInputIDs: Set<string>;
+    eventOutputIDs: Set<string>;
+    onButtonClick: (component: ComponentSchema) => void;
+    onValueChange: (component: ComponentSchema, value: unknown) => void;
+    runningSources: Set<string>;
+    runtime: Record<string, ComponentRuntimeState>;
+    values: Values;
+  },
+): ReactNode[] {
+  return components.map((component) => {
+    const effectiveComponent = applyComponentRuntime(component, context.runtime[component.id]);
+    const props = effectiveComponent.props ?? {};
+    if (props.visible === false || effectiveComponent.type === "state") {
+      return null;
+    }
+
+    if (isLayoutComponent(effectiveComponent.type)) {
+      return (
+        <LayoutBlock key={effectiveComponent.id} type={effectiveComponent.type} label={effectiveComponent.label}>
+          {renderBlocksComponents(effectiveComponent.items ?? [], context)}
+        </LayoutBlock>
+      );
+    }
+
+    const isRunning = context.runningSources.has(effectiveComponent.id);
+    const disabled = isRunning || props.disabled === true;
+
+    if (effectiveComponent.type === "button") {
+      return (
+        <Button
+          key={effectiveComponent.id}
+          type="button"
+          disabled={disabled}
+          onClick={() => context.onButtonClick(effectiveComponent)}
+        >
+          {isRunning ? <Spinner /> : null}
+          {effectiveComponent.label}
+        </Button>
+      );
+    }
+
+    const isOutputOnly =
+      context.eventOutputIDs.has(effectiveComponent.id) && !context.eventInputIDs.has(effectiveComponent.id);
+    if (isOutputOnly || !isEditableBlocksComponent(effectiveComponent.type)) {
+      return (
+        <OutputBlock key={effectiveComponent.id} component={effectiveComponent} value={context.values[effectiveComponent.id]} />
+      );
+    }
+
+    return (
+      <SchemaInput
+        key={effectiveComponent.id}
+        component={effectiveComponent}
+        disabled={disabled}
+        value={context.values[effectiveComponent.id]}
+        onChange={(value) => context.onValueChange(effectiveComponent, value)}
+      />
+    );
+  });
+}
+
+function applyComponentRuntime(component: ComponentSchema, runtime?: ComponentRuntimeState): ComponentSchema {
+  if (!runtime) {
+    return component;
+  }
+
+  const props = { ...(component.props ?? {}) };
+  if (runtime.visible !== undefined) {
+    props.visible = runtime.visible;
+  }
+  if (runtime.disabled !== undefined) {
+    props.disabled = runtime.disabled;
+  }
+
+  return {
+    ...component,
+    choices: runtime.choices ?? component.choices,
+    label: runtime.label ?? component.label,
+    props,
+  };
+}
+
+function blockEventPayload(
+  event: EventSchema,
+  values: Values,
+  componentByID: Map<string, ComponentSchema>,
+  runtime: Record<string, ComponentRuntimeState>,
+) {
+  const payload: Record<string, unknown> = {};
+
+  for (const componentID of event.inputs) {
+    const component = componentByID.get(componentID);
+    if (!component) {
+      continue;
+    }
+
+    const effectiveComponent = applyComponentRuntime(component, runtime[component.id]);
+    if (effectiveComponent.type === "state" || effectiveComponent.props?.visible === false) {
+      continue;
+    }
+
+    const value = values[componentID];
+    if (value !== undefined) {
+      payload[componentID] = value;
+    }
+  }
+
+  return payload;
+}
+
+function componentRuntimeUpdate(update: ComponentUpdate): ComponentRuntimeState | null {
+  const runtimeUpdate: ComponentRuntimeState = {};
+  if (update.visible !== undefined) {
+    runtimeUpdate.visible = update.visible;
+  }
+  if (update.disabled !== undefined) {
+    runtimeUpdate.disabled = update.disabled;
+  }
+  if (update.choices !== undefined) {
+    runtimeUpdate.choices = update.choices;
+  }
+  if (update.label !== undefined) {
+    runtimeUpdate.label = update.label;
+  }
+
+  return Object.keys(runtimeUpdate).length > 0 ? runtimeUpdate : null;
+}
+
+function isComponentUpdate(value: unknown): value is ComponentUpdate {
+  return Boolean(value && typeof value === "object" && (value as { kind?: unknown }).kind === "update");
+}
+
+function isEditableBlocksComponent(type: string) {
+  return (
+    type === "textbox" ||
+    type === "number" ||
+    type === "slider" ||
+    type === "checkbox" ||
+    type === "dropdown" ||
+    type === "audio" ||
+    type === "file" ||
+    type === "image"
   );
 }
 
