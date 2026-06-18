@@ -109,6 +109,58 @@ func TestBlocksSchemaComponentsDoNotRetainEventBinder(t *testing.T) {
 	}
 }
 
+func TestBlocksSchemaEventsDoNotRetainHandlers(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	app.Blocks(func(blocks *goleo.Blocks) {
+		prompt := blocks.Textbox("Prompt")
+		run := blocks.Button("Run")
+		run.Click(
+			goleo.Handler(func(input string) (string, error) { return input, nil }),
+			goleo.Inputs(prompt),
+			goleo.Outputs(prompt),
+		)
+	})
+
+	if handler := app.Schema().Interfaces[0].Events[0].Handler; handler != nil {
+		t.Fatalf("schema event retained handler: %#v", handler)
+	}
+}
+
+func TestGetInterfaceReturnsDefensiveEventSlices(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	app.Blocks(func(blocks *goleo.Blocks) {
+		prompt := blocks.Textbox("Prompt")
+		run := blocks.Button("Run")
+		run.Click(
+			goleo.Handler(func(input string) (string, error) { return input, nil }),
+			goleo.Inputs(prompt),
+			goleo.Outputs(prompt),
+		)
+	})
+
+	iface, ok := app.GetInterface("blocks-1")
+	if !ok {
+		t.Fatal("blocks interface not found")
+	}
+	iface.Events[0].Inputs[0] = "mutated"
+	iface.Events[0].Handler = nil
+
+	fresh, ok := app.GetInterface("blocks-1")
+	if !ok {
+		t.Fatal("blocks interface not found after mutation")
+	}
+	if fresh.Events[0].Inputs[0] == "mutated" {
+		t.Fatalf("GetInterface returned shared event input slice")
+	}
+	if fresh.Events[0].Handler == nil {
+		t.Fatalf("GetInterface returned shared event handler field")
+	}
+}
+
 func TestInterfaceSchemaIncludesComponents(t *testing.T) {
 	t.Parallel()
 

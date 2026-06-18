@@ -155,6 +155,16 @@ func (app *App) setState(ifaceID, componentID string, value any) {
 	ifaceState[componentID] = value
 }
 
+func (app *App) initState(ifaceID string, values map[string]any) {
+	app.stateMu.Lock()
+	defer app.stateMu.Unlock()
+
+	if values == nil {
+		values = map[string]any{}
+	}
+	app.states[ifaceID] = values
+}
+
 func (app *App) resetState(ifaceID string) {
 	app.stateMu.Lock()
 	defer app.stateMu.Unlock()
@@ -175,11 +185,7 @@ func (app *App) Interface(
 	app.mu.Lock()
 	defer app.mu.Unlock()
 
-	if len(stateValues) > 0 {
-		app.states[id] = stateValues
-	} else {
-		app.states[id] = map[string]any{}
-	}
+	app.initState(id, stateValues)
 
 	app.interfaces = append(app.interfaces, Interface{
 		ID:      id,
@@ -198,7 +204,7 @@ func (app *App) Chat(handler *runtime.HandlerBinding) {
 	id := "chat-" + strconv.Itoa(countKind(app.interfaces, "chat")+1)
 	inputs := assignComponentIDs([]component.Component{component.Textbox("Message")}, id+"-input")
 	outputs := assignComponentIDs([]component.Component{component.Chatbot("Chat")}, id+"-output")
-	app.states[id] = map[string]any{}
+	app.initState(id, nil)
 	app.interfaces = append(app.interfaces, Interface{
 		ID:      id,
 		Kind:    "chat",
@@ -214,7 +220,7 @@ func (app *App) Voice(handler *runtime.VoiceBinding) {
 	defer app.mu.Unlock()
 
 	id := "voice-" + strconv.Itoa(countKind(app.interfaces, "voice")+1)
-	app.states[id] = map[string]any{}
+	app.initState(id, nil)
 	app.interfaces = append(app.interfaces, Interface{
 		ID:           id,
 		Kind:         "voice",
@@ -241,7 +247,7 @@ func (app *App) Blocks(build func(*Blocks)) {
 	app.mu.Lock()
 	defer app.mu.Unlock()
 
-	app.states[id] = collectInitialStateValues(components)
+	app.initState(id, collectInitialStateValues(components))
 	app.interfaces = append(app.interfaces, Interface{
 		ID:         id,
 		Kind:       "blocks",
@@ -282,7 +288,7 @@ func (app *App) GetInterface(id string) (Interface, bool) {
 
 	for _, iface := range app.interfaces {
 		if iface.ID == id {
-			return iface, true
+			return cloneInterfaceForRuntime(iface), true
 		}
 	}
 
@@ -372,12 +378,35 @@ func cloneComponents(components []component.Component) []component.Component {
 	return result
 }
 
+func cloneInterfaceForRuntime(iface Interface) Interface {
+	return Interface{
+		ID:           iface.ID,
+		Kind:         iface.Kind,
+		Inputs:       cloneComponents(iface.Inputs),
+		Outputs:      cloneComponents(iface.Outputs),
+		Components:   cloneComponents(iface.Components),
+		Events:       cloneEventsForRuntime(iface.Events),
+		Handler:      iface.Handler,
+		VoiceHandler: iface.VoiceHandler,
+	}
+}
+
 func cloneEvents(events []EventBinding) []EventBinding {
 	result := make([]EventBinding, 0, len(events))
 	for _, event := range events {
 		event.Inputs = append([]string{}, event.Inputs...)
 		event.Outputs = append([]string{}, event.Outputs...)
 		event.Handler = nil
+		result = append(result, event)
+	}
+	return result
+}
+
+func cloneEventsForRuntime(events []EventBinding) []EventBinding {
+	result := make([]EventBinding, 0, len(events))
+	for _, event := range events {
+		event.Inputs = append([]string{}, event.Inputs...)
+		event.Outputs = append([]string{}, event.Outputs...)
 		result = append(result, event)
 	}
 	return result
