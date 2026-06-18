@@ -504,6 +504,27 @@ describe("Goleo frontend", () => {
       { hidden: ["advancedPrompt"] },
     );
   });
+
+  it("propagates layout disabled updates to nested controls", async () => {
+    mockedAPI.loadSchema.mockResolvedValue(blocksRuntimeDisabledGroupSchema());
+    mockedAPI.sendEvent
+      .mockResolvedValueOnce({ advanced: { __goleo_update__: true, kind: "update", disabled: true } })
+      .mockResolvedValueOnce({});
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(await screen.findByLabelText("Advanced prompt")).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Disable advanced" }));
+    expect(await screen.findByLabelText("Advanced prompt")).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Submit runtime" }));
+    expect(mockedAPI.sendEvent).toHaveBeenLastCalledWith(
+      "blocks-runtime-disabled-group",
+      "submit-click",
+      { advancedPrompt: "secret" },
+    );
+  });
 });
 
 function interfaceSchema(): AppSchema {
@@ -935,6 +956,47 @@ function blocksRuntimeHiddenGroupSchema(): AppSchema {
             trigger: "click",
             source: "submit",
             inputs: ["advancedPrompt", "visiblePrompt"],
+            outputs: [],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function blocksRuntimeDisabledGroupSchema(): AppSchema {
+  return {
+    version: "0.1.0",
+    interfaces: [
+      {
+        id: "blocks-runtime-disabled-group",
+        kind: "blocks",
+        inputs: [],
+        outputs: [],
+        components: [
+          {
+            id: "advanced",
+            type: "group",
+            label: "Advanced controls",
+            props: {},
+            items: [{ id: "advancedPrompt", type: "textbox", label: "Advanced prompt", props: { default: "secret" } }],
+          },
+          { id: "disable", type: "button", label: "Disable advanced", props: {} },
+          { id: "submit", type: "button", label: "Submit runtime", props: {} },
+        ],
+        events: [
+          {
+            id: "disable-advanced",
+            trigger: "click",
+            source: "disable",
+            inputs: [],
+            outputs: ["advanced"],
+          },
+          {
+            id: "submit-click",
+            trigger: "click",
+            source: "submit",
+            inputs: ["advancedPrompt"],
             outputs: [],
           },
         ],

@@ -359,6 +359,7 @@ function BlocksInterface({ iface }: { iface: InterfaceSchema }) {
           runningSources,
           runtime,
           values,
+          inheritedDisabled: false,
         })}
         {error ? <ErrorAlert title="Event failed" message={error} /> : null}
       </CardContent>
@@ -376,6 +377,7 @@ function renderBlocksComponents(
     runningSources: Record<string, number>;
     runtime: Record<string, ComponentRuntimeState>;
     values: Values;
+    inheritedDisabled: boolean;
   },
 ): ReactNode[] {
   return components.map((component) => {
@@ -386,15 +388,16 @@ function renderBlocksComponents(
     }
 
     if (isLayoutComponent(effectiveComponent.type)) {
+      const disabled = context.inheritedDisabled || props.disabled === true;
       return (
         <LayoutBlock key={effectiveComponent.id} type={effectiveComponent.type} label={effectiveComponent.label}>
-          {renderBlocksComponents(effectiveComponent.items ?? [], context)}
+          {renderBlocksComponents(effectiveComponent.items ?? [], { ...context, inheritedDisabled: disabled })}
         </LayoutBlock>
       );
     }
 
     const isRunning = (context.runningSources[effectiveComponent.id] ?? 0) > 0;
-    const disabled = isRunning || props.disabled === true;
+    const disabled = context.inheritedDisabled || isRunning || props.disabled === true;
 
     if (effectiveComponent.type === "button") {
       return (

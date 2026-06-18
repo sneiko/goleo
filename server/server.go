@@ -1168,8 +1168,7 @@ func mergeStateInputs(_ context.Context, app *core.App, interfaceID string, inpu
 }
 
 func updateStateFromOutputs(app *core.App, interfaceID string, outputs []component.Component, values []any) {
-	flatOutputs := flattenLeafComponents(outputs)
-	for index, component := range flatOutputs {
+	for index, component := range outputs {
 		if component.Type != "state" {
 			continue
 		}

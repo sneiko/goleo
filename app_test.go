@@ -1303,6 +1303,116 @@ func TestEventEndpointReturnsUpdateEnvelopeForLayoutOutput(t *testing.T) {
 	}
 }
 
+func TestEventEndpointDoesNotUpdateStateFromLayoutOutput(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	prompt := goleo.Textbox("Prompt")
+	prompt.ID = "prompt"
+	state := goleo.State("Memory", goleo.WithDefault("saved"))
+	state.ID = "memory"
+	group := goleo.Group("State group")
+	group.ID = "memory-group"
+	group.Items = []goleo.Component{state}
+	save := goleo.Button("Save")
+	save.ID = "save"
+	read := goleo.Button("Read")
+	read.ID = "read"
+	out := goleo.Textbox("Result")
+	out.ID = "out"
+	appendInterfaceForTest(t, app, core.Interface{
+		ID:         "blocks-1",
+		Kind:       "blocks",
+		Inputs:     []goleo.Component{},
+		Outputs:    []goleo.Component{},
+		Components: []goleo.Component{prompt, group, save, read, out},
+		Events: []core.EventBinding{
+			{
+				ID:      "blocks-1-event-1",
+				Trigger: "click",
+				Source:  save.ID,
+				Inputs:  []string{prompt.ID},
+				Outputs: []string{group.ID},
+				Handler: goleo.Handler(func(input string) (string, error) {
+					return "updated", nil
+				}),
+			},
+			{
+				ID:      "blocks-1-event-2",
+				Trigger: "click",
+				Source:  read.ID,
+				Inputs:  []string{state.ID},
+				Outputs: []string{out.ID},
+				Handler: goleo.Handler(func(memory string) (string, error) {
+					return memory, nil
+				}),
+			},
+		},
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	saveBody, err := json.Marshal(map[string]any{
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-1",
+		"data": map[string]any{
+			prompt.ID: "ignored",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal save request: %v", err)
+	}
+	saveResp, err := http.Post(server.URL+"/api/event", "application/json", bytes.NewReader(saveBody))
+	if err != nil {
+		t.Fatalf("post save event: %v", err)
+	}
+	defer saveResp.Body.Close()
+
+	if saveResp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", saveResp.StatusCode, http.StatusOK)
+	}
+	var saveGot struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(saveResp.Body).Decode(&saveGot); err != nil {
+		t.Fatalf("decode save response: %v", err)
+	}
+	if _, ok := saveGot.Data[group.ID].(map[string]any); ok {
+		t.Fatalf("state update should not be emitted for layout output path, got %#v", saveGot.Data[group.ID])
+	}
+	if saveGot.Data[group.ID] != "updated" {
+		t.Fatalf("save got = %#v, want plain layout value", saveGot)
+	}
+
+	readBody, err := json.Marshal(map[string]any{
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-2",
+		"data":         map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("marshal read request: %v", err)
+	}
+	readResp, err := http.Post(server.URL+"/api/event", "application/json", bytes.NewReader(readBody))
+	if err != nil {
+		t.Fatalf("post read event: %v", err)
+	}
+	defer readResp.Body.Close()
+
+	if readResp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", readResp.StatusCode, http.StatusOK)
+	}
+	var readGot struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(readResp.Body).Decode(&readGot); err != nil {
+		t.Fatalf("decode read response: %v", err)
+	}
+	if readGot.Data[out.ID] != "saved" {
+		t.Fatalf("data = %#v, want saved", readGot.Data)
+	}
+}
+
 func TestEventEndpointReturnsKindUpdateMapAsOrdinaryData(t *testing.T) {
 	t.Parallel()
 
