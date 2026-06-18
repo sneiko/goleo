@@ -17,8 +17,10 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/sneiko/goleo"
+	"github.com/sneiko/goleo/core"
 )
 
 func TestUpdateHelpersBuildPointerFields(t *testing.T) {
@@ -43,6 +45,19 @@ func TestUpdateHelpersBuildPointerFields(t *testing.T) {
 	if !reflect.DeepEqual(choices.Choices, []string{"a", "b"}) {
 		t.Fatalf("Choices helper = %#v, want [a b]", choices.Choices)
 	}
+}
+
+func appendInterfaceForTest(t *testing.T, app *goleo.App, iface core.Interface) {
+	t.Helper()
+
+	appValue := reflect.ValueOf(app.App).Elem()
+	interfaces := appValue.FieldByName("interfaces")
+	if !interfaces.IsValid() {
+		t.Fatal("core.App interfaces field not found")
+	}
+
+	settableInterfaces := reflect.NewAt(interfaces.Type(), unsafe.Pointer(interfaces.UnsafeAddr())).Elem()
+	settableInterfaces.Set(reflect.Append(settableInterfaces, reflect.ValueOf(iface)))
 }
 
 func TestBlocksSchemaIncludesComponentsAndEvents(t *testing.T) {
@@ -1222,6 +1237,69 @@ func TestEventEndpointReturnsUpdateEnvelope(t *testing.T) {
 	}
 	if _, ok := update["visible"]; ok {
 		t.Fatalf("update = %#v, did not want unset visible field", update)
+	}
+}
+
+func TestEventEndpointReturnsUpdateEnvelopeForLayoutOutput(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	group := goleo.Group("Advanced")
+	group.ID = "blocks-1-component-1"
+	group.Props = map[string]any{}
+	run := goleo.Button("Hide")
+	run.ID = "blocks-1-component-2"
+	run.Props = map[string]any{}
+	appendInterfaceForTest(t, app, core.Interface{
+		ID:         "blocks-1",
+		Kind:       "blocks",
+		Inputs:     []goleo.Component{},
+		Outputs:    []goleo.Component{},
+		Components: []goleo.Component{group, run},
+		Events: []core.EventBinding{
+			{
+				ID:      "blocks-1-event-1",
+				Trigger: "click",
+				Source:  run.ID,
+				Outputs: []string{group.ID},
+				Handler: goleo.Handler(func() (goleo.Update, error) {
+					return goleo.Visible(false), nil
+				}),
+			},
+		},
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	requestBody, err := json.Marshal(map[string]any{
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-1",
+		"data":         map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("marshal event request: %v", err)
+	}
+	resp, err := http.Post(server.URL+"/api/event", "application/json", bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("post event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want %d, body = %s", resp.StatusCode, http.StatusOK, body)
+	}
+
+	var got struct {
+		Data map[string]map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode event response: %v", err)
+	}
+	update := got.Data[group.ID]
+	if update["kind"] != "update" || update["__goleo_update__"] != true || update["visible"] != false {
+		t.Fatalf("layout update = %#v, want marked visible false update", update)
 	}
 }
 

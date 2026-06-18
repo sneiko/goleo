@@ -477,7 +477,7 @@ func handleEvent(
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		outputComponents, err := componentsByIDs(iface.Components, event.Outputs)
+		outputComponents, err := componentsByIDsIncludingLayouts(iface.Components, event.Outputs)
 		if err != nil {
 			errorRequest(
 				logger,
@@ -1084,6 +1084,17 @@ func flattenLeafComponents(components []component.Component) []component.Compone
 	return leafs
 }
 
+func flattenComponents(components []component.Component) []component.Component {
+	flat := make([]component.Component, 0, len(components))
+	for _, component := range components {
+		flat = append(flat, component)
+		if len(component.Items) > 0 {
+			flat = append(flat, flattenComponents(component.Items)...)
+		}
+	}
+	return flat
+}
+
 func isLayoutComponent(kind string) bool {
 	switch kind {
 	case "row", "column", "group":
@@ -1180,6 +1191,15 @@ func stateOutputValue(value any) any {
 
 func componentsByIDs(components []component.Component, ids []string) ([]component.Component, error) {
 	flatComponents := flattenLeafComponents(components)
+	return componentsByIDsFromFlat(flatComponents, ids)
+}
+
+func componentsByIDsIncludingLayouts(components []component.Component, ids []string) ([]component.Component, error) {
+	flatComponents := flattenComponents(components)
+	return componentsByIDsFromFlat(flatComponents, ids)
+}
+
+func componentsByIDsFromFlat(flatComponents []component.Component, ids []string) ([]component.Component, error) {
 	byID := make(map[string]component.Component, len(flatComponents))
 	for _, item := range flatComponents {
 		byID[item.ID] = item
@@ -1204,7 +1224,7 @@ func validateEventSource(components []component.Component, event core.EventBindi
 		return fmt.Errorf("event %q missing source component", event.ID)
 	}
 
-	_, err := componentsByIDs(components, []string{event.Source})
+	_, err := componentsByIDsIncludingLayouts(components, []string{event.Source})
 	if err != nil {
 		return fmt.Errorf("source component %q not found", event.Source)
 	}
