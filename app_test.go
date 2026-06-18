@@ -88,6 +88,27 @@ func TestBlocksSchemaIncludesComponentsAndEvents(t *testing.T) {
 	}
 }
 
+func TestBlocksSchemaComponentsDoNotRetainEventBinder(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	app.Blocks(func(blocks *goleo.Blocks) {
+		prompt := blocks.Textbox("Prompt")
+		run := blocks.Button("Run")
+		run.Click(
+			goleo.Handler(func(input string) (string, error) { return input, nil }),
+			goleo.Inputs(prompt),
+			goleo.Outputs(prompt),
+		)
+	})
+
+	componentValue := reflect.ValueOf(app.Schema().Interfaces[0].Components[0])
+	binder := componentValue.FieldByName("eventBinder")
+	if binder.IsValid() && !binder.IsNil() {
+		t.Fatalf("schema component retained event binder")
+	}
+}
+
 func TestInterfaceSchemaIncludesComponents(t *testing.T) {
 	t.Parallel()
 

@@ -27,6 +27,11 @@ func WithEventBinder(component Component, binder EventBinder) Component {
 	return component
 }
 
+func WithoutEventBinder(component Component) Component {
+	component.eventBinder = nil
+	return component
+}
+
 func (component Component) Click(handler *runtime.HandlerBinding, inputs List, outputs List) {
 	if component.eventBinder == nil {
 		return

@@ -34,9 +34,10 @@ func (handler discardHandler) WithGroup(string) slog.Handler {
 
 // App is a runnable AI demo application model.
 type App struct {
-	mu         sync.RWMutex
-	interfaces []Interface
-	logger     *slog.Logger
+	mu          sync.RWMutex
+	interfaces  []Interface
+	logger      *slog.Logger
+	blocksCount int
 
 	stateMu      sync.RWMutex
 	states       map[string]map[string]any
@@ -225,15 +226,21 @@ func (app *App) Voice(handler *runtime.VoiceBinding) {
 
 func (app *App) Blocks(build func(*Blocks)) {
 	app.mu.Lock()
-	defer app.mu.Unlock()
+	app.blocksCount++
+	id := "blocks-" + strconv.Itoa(app.blocksCount)
+	app.mu.Unlock()
 
-	id := "blocks-" + strconv.Itoa(countKind(app.interfaces, "blocks")+1)
 	blocks := newBlocks(id)
 	if build != nil {
 		build(blocks)
 	}
 
 	components := assignComponentIDs(blocks.components, id+"-component")
+	events := append([]EventBinding{}, blocks.events...)
+
+	app.mu.Lock()
+	defer app.mu.Unlock()
+
 	app.states[id] = collectInitialStateValues(components)
 	app.interfaces = append(app.interfaces, Interface{
 		ID:         id,
@@ -241,7 +248,7 @@ func (app *App) Blocks(build func(*Blocks)) {
 		Inputs:     []component.Component{},
 		Outputs:    []component.Component{},
 		Components: components,
-		Events:     append([]EventBinding{}, blocks.events...),
+		Events:     events,
 	})
 }
 
@@ -289,6 +296,8 @@ func (app *App) GetEvent(interfaceID, eventID string) (Interface, EventBinding, 
 	}
 	for _, event := range iface.Events {
 		if event.ID == eventID {
+			event.Inputs = append([]string{}, event.Inputs...)
+			event.Outputs = append([]string{}, event.Outputs...)
 			return iface, event, true
 		}
 	}
@@ -356,6 +365,7 @@ func cloneComponents(components []component.Component) []component.Component {
 		item.Props = props
 		item.Items = cloneComponents(item.Items)
 		item.Choices = append([]string{}, item.Choices...)
+		item = component.WithoutEventBinder(item)
 		result = append(result, item)
 	}
 
