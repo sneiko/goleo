@@ -411,6 +411,21 @@ func handleEvent(
 			writeError(w, http.StatusNotFound, err)
 			return
 		}
+		if err := validateEventSource(iface.Components, event); err != nil {
+			errorRequest(
+				logger,
+				r,
+				"event source component binding invalid",
+				"interface_id",
+				request.InterfaceID,
+				"event_id",
+				request.EventID,
+				"error",
+				err,
+			)
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 		if event.Handler == nil {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("event %q does not have handler", event.ID))
 			return
@@ -477,7 +492,7 @@ func handleEvent(
 		}
 		requestData = mergeStateInputs(handlerContext, app, iface.ID, inputComponents, requestData)
 
-		hydrated, err := hydrateAssets(inputComponents, requestData, store)
+		hydrated, err := hydrateEventAssets(inputComponents, requestData, store)
 		if err != nil {
 			warnRequest(
 				logger,
@@ -1133,6 +1148,21 @@ func componentsByIDs(components []component.Component, ids []string) ([]componen
 	return result, nil
 }
 
+func validateEventSource(components []component.Component, event core.EventBinding) error {
+	if event.Source == "" {
+		if event.Trigger == "load" {
+			return nil
+		}
+		return fmt.Errorf("event %q missing source component", event.ID)
+	}
+
+	_, err := componentsByIDs(components, []string{event.Source})
+	if err != nil {
+		return fmt.Errorf("source component %q not found", event.Source)
+	}
+	return nil
+}
+
 func valuesForComponents(components []component.Component, values map[string]any) ([]any, error) {
 	allowed := make(map[string]struct{}, len(components))
 	for _, item := range components {
@@ -1148,6 +1178,10 @@ func valuesForComponents(components []component.Component, values map[string]any
 	result := make([]any, 0, len(components))
 	for _, item := range components {
 		if _, ok := values[item.ID]; !ok {
+			if item.Type == "state" {
+				result = append(result, nil)
+				continue
+			}
 			return nil, fmt.Errorf("missing input %q", item.ID)
 		}
 		result = append(result, values[item.ID])
@@ -1193,6 +1227,42 @@ func hydrateAssets(inputs []component.Component, data []any, store *assetStore) 
 		if !ok {
 			hydrated = append(hydrated, item)
 			continue
+		}
+
+		id, _ := descriptor["id"].(string)
+		if id == "" {
+			hydrated = append(hydrated, item)
+			continue
+		}
+
+		record, found := store.get(id)
+		if !found {
+			return nil, fmt.Errorf("asset %q not found", id)
+		}
+		hydrated = append(hydrated, fileInputFromRecord(record.handlerValue(), component.Type))
+	}
+
+	return hydrated, nil
+}
+
+func hydrateEventAssets(inputs []component.Component, data []any, store *assetStore) ([]any, error) {
+	hydrated := make([]any, 0, len(data))
+
+	for index, item := range data {
+		if index >= len(inputs) {
+			hydrated = append(hydrated, item)
+			continue
+		}
+
+		component := inputs[index]
+		if component.Type != "audio" && component.Type != "file" && component.Type != "image" {
+			hydrated = append(hydrated, item)
+			continue
+		}
+
+		descriptor, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("media input %q must be an object", component.ID)
 		}
 
 		id, _ := descriptor["id"].(string)

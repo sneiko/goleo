@@ -625,6 +625,47 @@ func TestPredictEndpointHydratesAudioInputAndDehydratesAudioOutput(t *testing.T)
 	}
 }
 
+func TestPredictEndpointLeavesMediaMapWithoutIDUnchanged(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	app.Interface(
+		goleo.Handler(func(input map[string]any) (string, error) {
+			name, _ := input["name"].(string)
+			return name, nil
+		}),
+		goleo.Inputs(goleo.Audio("Prompt audio")),
+		goleo.Outputs(goleo.Textbox("Result")),
+	)
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	resp, err := http.Post(
+		server.URL+"/api/predict",
+		"application/json",
+		strings.NewReader(`{"interface_id":"interface-1","data":[{"name":"raw.wav"}]}`),
+	)
+	if err != nil {
+		t.Fatalf("post predict: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var got struct {
+		Data []any `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode predict response: %v", err)
+	}
+	if len(got.Data) != 1 || got.Data[0] != "raw.wav" {
+		t.Fatalf("data = %#v, want raw.wav", got.Data)
+	}
+}
+
 func TestPredictEndpointHydratesFileAndImageInputsAndDehydratesFileAndImageOutputs(t *testing.T) {
 	t.Parallel()
 
@@ -1254,6 +1295,139 @@ func TestEventEndpointDehydratesUpdateValueMediaOutput(t *testing.T) {
 	}
 }
 
+func TestEventEndpointUsesOmittedStateInput(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	var prompt, out goleo.Component
+	app.Blocks(func(blocks *goleo.Blocks) {
+		prompt = blocks.Textbox("Prompt")
+		state := blocks.State("Memory", goleo.WithDefault("saved"))
+		out = blocks.Textbox("Result")
+		run := blocks.Button("Run")
+		run.Click(
+			goleo.Handler(func(input string, memory string) (string, error) {
+				return input + ":" + memory, nil
+			}),
+			goleo.Inputs(prompt, state),
+			goleo.Outputs(out),
+		)
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	requestBody, err := json.Marshal(map[string]any{
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-1",
+		"data": map[string]any{
+			prompt.ID: "hello",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal event request: %v", err)
+	}
+	resp, err := http.Post(server.URL+"/api/event", "application/json", bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("post event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var got struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode event response: %v", err)
+	}
+	if got.Data[out.ID] != "hello:saved" {
+		t.Fatalf("data = %#v, want state-backed output", got.Data)
+	}
+}
+
+func TestEventEndpointRejectsUnknownSourceComponentID(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	var prompt goleo.Component
+	app.Blocks(func(blocks *goleo.Blocks) {
+		prompt = blocks.Textbox("Prompt")
+		out := blocks.Textbox("Result")
+		blocks.BindEvent(
+			"click",
+			goleo.Component{ID: "missing-source"},
+			goleo.Handler(func(input string) (string, error) { return input, nil }),
+			goleo.Inputs(prompt),
+			goleo.Outputs(out),
+		)
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	requestBody, err := json.Marshal(map[string]any{
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-1",
+		"data": map[string]any{
+			prompt.ID: "hello",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal event request: %v", err)
+	}
+	resp, err := http.Post(server.URL+"/api/event", "application/json", bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("post event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	assertEventInternalError(t, resp, `source component "missing-source" not found`)
+}
+
+func TestEventEndpointAllowsSourceLessLoadEvent(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	var out goleo.Component
+	app.Blocks(func(blocks *goleo.Blocks) {
+		out = blocks.Textbox("Result")
+		blocks.Load(
+			goleo.Handler(func() (string, error) { return "loaded", nil }),
+			goleo.Outputs(out),
+		)
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	resp, err := http.Post(
+		server.URL+"/api/event",
+		"application/json",
+		strings.NewReader(`{"interface_id":"blocks-1","event_id":"blocks-1-event-1","data":{}}`),
+	)
+	if err != nil {
+		t.Fatalf("post event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var got struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode event response: %v", err)
+	}
+	if got.Data[out.ID] != "loaded" {
+		t.Fatalf("data = %#v, want loaded", got.Data)
+	}
+}
+
 func TestEventEndpointQueueLimitReturnsError(t *testing.T) {
 	app := goleo.New()
 	app.ConfigureQueue(1, 0)
@@ -1663,6 +1837,44 @@ func TestEventEndpointRejectsMediaInputWithoutID(t *testing.T) {
 	assertEventBadRequest(t, resp, fmt.Sprintf("media input %q requires asset id", audio.ID))
 }
 
+func TestEventEndpointRejectsMediaInputNonObject(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	var audio goleo.Component
+	app.Blocks(func(blocks *goleo.Blocks) {
+		audio = blocks.Audio("Prompt")
+		out := blocks.Textbox("Result")
+		run := blocks.Button("Run")
+		run.Click(
+			goleo.Handler(func(input goleo.AudioInput) (string, error) { return input.Name, nil }),
+			goleo.Inputs(audio),
+			goleo.Outputs(out),
+		)
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	requestBody, err := json.Marshal(map[string]any{
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-1",
+		"data": map[string]any{
+			audio.ID: "raw",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal event request: %v", err)
+	}
+	resp, err := http.Post(server.URL+"/api/event", "application/json", bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("post event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	assertEventBadRequest(t, resp, fmt.Sprintf("media input %q must be an object", audio.ID))
+}
+
 func TestEventEndpointRejectsOutputCardinalityMismatch(t *testing.T) {
 	t.Parallel()
 
@@ -1752,6 +1964,26 @@ func assertEventBadRequest(t *testing.T, resp *http.Response, wantMessage string
 		t.Fatalf("decode error response: %v", err)
 	}
 	if got.Error.Code != "bad_request" || !strings.Contains(got.Error.Message, wantMessage) {
+		t.Fatalf("error = %#v, want message containing %q", got.Error, wantMessage)
+	}
+}
+
+func assertEventInternalError(t *testing.T, resp *http.Response, wantMessage string) {
+	t.Helper()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+	var got struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if got.Error.Code != "internal_error" || !strings.Contains(got.Error.Message, wantMessage) {
 		t.Fatalf("error = %#v, want message containing %q", got.Error, wantMessage)
 	}
 }
