@@ -416,9 +416,14 @@ describe("Goleo frontend", () => {
 
     await user.click(screen.getByRole("button", { name: "Send visible" }));
 
-    expect(mockedAPI.sendEvent).toHaveBeenCalledWith("blocks-hidden-group", "send-click", {
-      visiblePrompt: "public",
-    });
+    expect(mockedAPI.sendEvent).toHaveBeenCalledWith(
+      "blocks-hidden-group",
+      "send-click",
+      {
+        visiblePrompt: "public",
+      },
+      { hidden: ["hiddenPrompt"] },
+    );
   });
 
   it("excludes inputs hidden by runtime ancestor layout updates from later blocks event payloads", async () => {
@@ -436,9 +441,14 @@ describe("Goleo frontend", () => {
 
     await user.click(screen.getByRole("button", { name: "Submit runtime" }));
 
-    expect(mockedAPI.sendEvent).toHaveBeenLastCalledWith("blocks-runtime-hidden-group", "submit-click", {
-      visiblePrompt: "visible",
-    });
+    expect(mockedAPI.sendEvent).toHaveBeenLastCalledWith(
+      "blocks-runtime-hidden-group",
+      "submit-click",
+      {
+        visiblePrompt: "visible",
+      },
+      { hidden: ["advancedPrompt"] },
+    );
   });
 });
 

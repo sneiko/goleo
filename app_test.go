@@ -2057,6 +2057,143 @@ func TestEventEndpointRejectsMissingInputKey(t *testing.T) {
 	assertEventBadRequest(t, resp, fmt.Sprintf("missing input %q", prompt.ID))
 }
 
+func TestEventEndpointAllowsHiddenInputOmittedFromData(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	var hidden, visible, out goleo.Component
+	app.Blocks(func(blocks *goleo.Blocks) {
+		hidden = blocks.Textbox("Hidden", goleo.WithDefault("hidden-default"))
+		visible = blocks.Textbox("Visible")
+		out = blocks.Textbox("Result")
+		run := blocks.Button("Run")
+		run.Click(
+			goleo.Handler(func(hiddenInput string, visibleInput string) (string, error) {
+				if hiddenInput != "" {
+					return "unexpected hidden input: " + hiddenInput, nil
+				}
+				return visibleInput, nil
+			}),
+			goleo.Inputs(hidden, visible),
+			goleo.Outputs(out),
+		)
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	requestBody, err := json.Marshal(map[string]any{
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-1",
+		"data": map[string]any{
+			visible.ID: "shown",
+		},
+		"hidden": []string{hidden.ID},
+	})
+	if err != nil {
+		t.Fatalf("marshal event request: %v", err)
+	}
+	resp, err := http.Post(server.URL+"/api/event", "application/json", bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("post event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want %d, body = %s", resp.StatusCode, http.StatusOK, body)
+	}
+
+	var got struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode event response: %v", err)
+	}
+	if got.Data[out.ID] != "shown" {
+		t.Fatalf("data = %#v, want visible value", got.Data)
+	}
+}
+
+func TestEventEndpointRejectsHiddenInputNotPartOfEventInputs(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	var prompt, extra goleo.Component
+	app.Blocks(func(blocks *goleo.Blocks) {
+		prompt = blocks.Textbox("Prompt")
+		extra = blocks.Textbox("Extra")
+		out := blocks.Textbox("Result")
+		run := blocks.Button("Run")
+		run.Click(
+			goleo.Handler(func(input string) (string, error) { return input, nil }),
+			goleo.Inputs(prompt),
+			goleo.Outputs(out),
+		)
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	requestBody, err := json.Marshal(map[string]any{
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-1",
+		"data": map[string]any{
+			prompt.ID: "hello",
+		},
+		"hidden": []string{extra.ID},
+	})
+	if err != nil {
+		t.Fatalf("marshal event request: %v", err)
+	}
+	resp, err := http.Post(server.URL+"/api/event", "application/json", bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("post event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	assertEventBadRequest(t, resp, fmt.Sprintf("hidden input %q is not part of event inputs", extra.ID))
+}
+
+func TestEventEndpointRejectsUnknownHiddenInputID(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	var prompt goleo.Component
+	app.Blocks(func(blocks *goleo.Blocks) {
+		prompt = blocks.Textbox("Prompt")
+		out := blocks.Textbox("Result")
+		run := blocks.Button("Run")
+		run.Click(
+			goleo.Handler(func(input string) (string, error) { return input, nil }),
+			goleo.Inputs(prompt),
+			goleo.Outputs(out),
+		)
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	requestBody, err := json.Marshal(map[string]any{
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-1",
+		"data": map[string]any{
+			prompt.ID: "hello",
+		},
+		"hidden": []string{"missing-component"},
+	})
+	if err != nil {
+		t.Fatalf("marshal event request: %v", err)
+	}
+	resp, err := http.Post(server.URL+"/api/event", "application/json", bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("post event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	assertEventBadRequest(t, resp, `unknown hidden component "missing-component"`)
+}
+
 func TestEventEndpointRejectsClientProvidedStateInput(t *testing.T) {
 	t.Parallel()
 

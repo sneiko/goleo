@@ -40,6 +40,7 @@ type eventRequest struct {
 	InterfaceID string         `json:"interface_id"`
 	EventID     string         `json:"event_id"`
 	Data        map[string]any `json:"data"`
+	Hidden      []string       `json:"hidden,omitempty"`
 }
 
 type eventResponse struct {
@@ -459,6 +460,22 @@ func handleEvent(
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		hiddenInputs, err := hiddenInputSet(iface.Components, inputComponents, request.Hidden)
+		if err != nil {
+			warnRequest(
+				logger,
+				r,
+				"event hidden inputs invalid",
+				"interface_id",
+				request.InterfaceID,
+				"event_id",
+				request.EventID,
+				"error",
+				err,
+			)
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		outputComponents, err := componentsByIDs(iface.Components, event.Outputs)
 		if err != nil {
 			errorRequest(
@@ -475,7 +492,7 @@ func handleEvent(
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		requestData, err := valuesForComponents(inputComponents, request.Data)
+		requestData, err := valuesForComponents(inputComponents, request.Data, hiddenInputs)
 		if err != nil {
 			warnRequest(
 				logger,
@@ -1193,7 +1210,45 @@ func validateEventSource(components []component.Component, event core.EventBindi
 	return nil
 }
 
-func valuesForComponents(components []component.Component, values map[string]any) ([]any, error) {
+func hiddenInputSet(
+	components []component.Component,
+	inputComponents []component.Component,
+	hidden []string,
+) (map[string]struct{}, error) {
+	allComponentIDs := make(map[string]struct{})
+	collectComponentIDs(components, allComponentIDs)
+
+	inputIDs := make(map[string]struct{}, len(inputComponents))
+	for _, item := range inputComponents {
+		inputIDs[item.ID] = struct{}{}
+	}
+
+	result := make(map[string]struct{}, len(hidden))
+	for _, id := range hidden {
+		if _, ok := allComponentIDs[id]; !ok {
+			return nil, fmt.Errorf("unknown hidden component %q", id)
+		}
+		if _, ok := inputIDs[id]; !ok {
+			return nil, fmt.Errorf("hidden input %q is not part of event inputs", id)
+		}
+		result[id] = struct{}{}
+	}
+
+	return result, nil
+}
+
+func collectComponentIDs(components []component.Component, ids map[string]struct{}) {
+	for _, item := range components {
+		ids[item.ID] = struct{}{}
+		collectComponentIDs(item.Items, ids)
+	}
+}
+
+func valuesForComponents(
+	components []component.Component,
+	values map[string]any,
+	hidden map[string]struct{},
+) ([]any, error) {
 	allowed := make(map[string]struct{}, len(components))
 	for _, item := range components {
 		allowed[item.ID] = struct{}{}
@@ -1216,6 +1271,10 @@ func valuesForComponents(components []component.Component, values map[string]any
 			continue
 		}
 		if !ok {
+			if _, hiddenOK := hidden[item.ID]; hiddenOK {
+				result = append(result, nil)
+				continue
+			}
 			return nil, fmt.Errorf("missing input %q", item.ID)
 		}
 		result = append(result, value)

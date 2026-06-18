@@ -35,6 +35,7 @@ export async function predict(interfaceID: string, data: unknown[]): Promise<unk
 }
 
 export type EventOptions = {
+  hidden?: string[];
   requestID?: string;
 };
 
@@ -48,12 +49,16 @@ export async function sendEvent(
     interface_id: string;
     event_id: string;
     data: Record<string, unknown>;
+    hidden?: string[];
     request_id?: string;
   } = {
     interface_id: interfaceID,
     event_id: eventID,
     data,
   };
+  if (options?.hidden?.length) {
+    body.hidden = options.hidden;
+  }
   if (options?.requestID !== undefined) {
     body.request_id = options.requestID;
   }

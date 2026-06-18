@@ -126,6 +126,36 @@ describe("api client", () => {
     });
   });
 
+  it("includes hidden ids only when sending event requests with hidden inputs", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url, _init) => {
+        return new Response(JSON.stringify({ data: {} }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+
+    await sendEvent(
+      "blocks-1",
+      "blocks-1-event-1",
+      { "blocks-1-component-2": "visible" },
+      { hidden: ["blocks-1-component-1"] },
+    );
+
+    expect(fetch).toHaveBeenCalledWith("/api/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        interface_id: "blocks-1",
+        event_id: "blocks-1-event-1",
+        data: { "blocks-1-component-2": "visible" },
+        hidden: ["blocks-1-component-1"],
+      }),
+    });
+  });
+
   it("throws backend error messages for event request failures", async () => {
     vi.stubGlobal(
       "fetch",

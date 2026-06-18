@@ -296,11 +296,12 @@ function BlocksInterface({ iface }: { iface: InterfaceSchema }) {
     }
 
     try {
-      const response = await sendEvent(
-        iface.id,
-        event.id,
-        blockEventPayload(event, nextValues, componentByID, hiddenComponentIDs),
-      );
+      const hiddenInputs = hiddenEventInputIDs(event, hiddenComponentIDs);
+      const requestData = blockEventPayload(event, nextValues, componentByID, hiddenComponentIDs);
+      const response =
+        hiddenInputs.length > 0
+          ? await sendEvent(iface.id, event.id, requestData, { hidden: hiddenInputs })
+          : await sendEvent(iface.id, event.id, requestData);
       applyEventResponse(response);
     } catch (eventError) {
       setError(errorMessage(eventError));
@@ -467,6 +468,10 @@ function blockEventPayload(
   }
 
   return payload;
+}
+
+function hiddenEventInputIDs(event: EventSchema, hiddenComponentIDs: Set<string>) {
+  return event.inputs.filter((componentID) => hiddenComponentIDs.has(componentID));
 }
 
 function hiddenBlockComponentIDs(
