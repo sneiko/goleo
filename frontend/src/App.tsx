@@ -253,6 +253,7 @@ function BlocksInterface({ iface }: { iface: InterfaceSchema }) {
   const [error, setError] = useState<string | null>(null);
   const [runningSources, setRunningSources] = useState<Set<string>>(() => new Set());
   const sentLoadEventsRef = useRef(false);
+  const hiddenComponentIDs = useMemo(() => hiddenBlockComponentIDs(components, runtime), [components, runtime]);
 
   function applyEventResponse(response: Record<string, unknown>) {
     const nextValues: Values = {};
@@ -298,7 +299,7 @@ function BlocksInterface({ iface }: { iface: InterfaceSchema }) {
       const response = await sendEvent(
         iface.id,
         event.id,
-        blockEventPayload(event, nextValues, componentByID, runtime),
+        blockEventPayload(event, nextValues, componentByID, hiddenComponentIDs),
       );
       applyEventResponse(response);
     } catch (eventError) {
@@ -445,7 +446,7 @@ function blockEventPayload(
   event: EventSchema,
   values: Values,
   componentByID: Map<string, ComponentSchema>,
-  runtime: Record<string, ComponentRuntimeState>,
+  hiddenComponentIDs: Set<string>,
 ) {
   const payload: Record<string, unknown> = {};
 
@@ -455,8 +456,7 @@ function blockEventPayload(
       continue;
     }
 
-    const effectiveComponent = applyComponentRuntime(component, runtime[component.id]);
-    if (effectiveComponent.type === "state" || effectiveComponent.props?.visible === false) {
+    if (component.type === "state" || hiddenComponentIDs.has(componentID)) {
       continue;
     }
 
@@ -467,6 +467,28 @@ function blockEventPayload(
   }
 
   return payload;
+}
+
+function hiddenBlockComponentIDs(
+  components: ComponentSchema[],
+  runtime: Record<string, ComponentRuntimeState>,
+  ancestorHidden = false,
+) {
+  const hiddenIDs = new Set<string>();
+
+  for (const component of components) {
+    const effectiveComponent = applyComponentRuntime(component, runtime[component.id]);
+    const hidden = ancestorHidden || effectiveComponent.props?.visible === false;
+    if (hidden) {
+      hiddenIDs.add(component.id);
+    }
+
+    for (const hiddenID of hiddenBlockComponentIDs(effectiveComponent.items ?? [], runtime, hidden)) {
+      hiddenIDs.add(hiddenID);
+    }
+  }
+
+  return hiddenIDs;
 }
 
 function componentRuntimeUpdate(update: ComponentUpdate): ComponentRuntimeState | null {

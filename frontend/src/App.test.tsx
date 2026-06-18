@@ -403,6 +403,43 @@ describe("Goleo frontend", () => {
     );
     expect(await screen.findByText("Preview: abc")).toBeInTheDocument();
   });
+
+  it("excludes inputs hidden by ancestor layout props from blocks event payloads", async () => {
+    mockedAPI.loadSchema.mockResolvedValue(blocksHiddenGroupSchema());
+    mockedAPI.sendEvent.mockResolvedValue({});
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(await screen.findByLabelText("Visible prompt")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Hidden prompt")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Send visible" }));
+
+    expect(mockedAPI.sendEvent).toHaveBeenCalledWith("blocks-hidden-group", "send-click", {
+      visiblePrompt: "public",
+    });
+  });
+
+  it("excludes inputs hidden by runtime ancestor layout updates from later blocks event payloads", async () => {
+    mockedAPI.loadSchema.mockResolvedValue(blocksRuntimeHiddenGroupSchema());
+    mockedAPI.sendEvent
+      .mockResolvedValueOnce({ advanced: { kind: "update", visible: false } })
+      .mockResolvedValueOnce({});
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(await screen.findByLabelText("Advanced prompt")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Hide advanced" }));
+    await waitFor(() => expect(screen.queryByLabelText("Advanced prompt")).not.toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Submit runtime" }));
+
+    expect(mockedAPI.sendEvent).toHaveBeenLastCalledWith("blocks-runtime-hidden-group", "submit-click", {
+      visiblePrompt: "visible",
+    });
+  });
 });
 
 function interfaceSchema(): AppSchema {
@@ -698,6 +735,82 @@ function blocksChangeSchema(): AppSchema {
             source: "prompt",
             inputs: ["prompt"],
             outputs: ["preview"],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function blocksHiddenGroupSchema(): AppSchema {
+  return {
+    version: "0.1.0",
+    interfaces: [
+      {
+        id: "blocks-hidden-group",
+        kind: "blocks",
+        inputs: [],
+        outputs: [],
+        components: [
+          {
+            id: "hidden",
+            type: "group",
+            label: "Hidden controls",
+            props: { visible: false },
+            items: [{ id: "hiddenPrompt", type: "textbox", label: "Hidden prompt", props: { default: "secret" } }],
+          },
+          { id: "visiblePrompt", type: "textbox", label: "Visible prompt", props: { default: "public" } },
+          { id: "send", type: "button", label: "Send visible", props: {} },
+        ],
+        events: [
+          {
+            id: "send-click",
+            trigger: "click",
+            source: "send",
+            inputs: ["hiddenPrompt", "visiblePrompt"],
+            outputs: [],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function blocksRuntimeHiddenGroupSchema(): AppSchema {
+  return {
+    version: "0.1.0",
+    interfaces: [
+      {
+        id: "blocks-runtime-hidden-group",
+        kind: "blocks",
+        inputs: [],
+        outputs: [],
+        components: [
+          {
+            id: "advanced",
+            type: "group",
+            label: "Advanced controls",
+            props: {},
+            items: [{ id: "advancedPrompt", type: "textbox", label: "Advanced prompt", props: { default: "secret" } }],
+          },
+          { id: "visiblePrompt", type: "textbox", label: "Visible prompt", props: { default: "visible" } },
+          { id: "hide", type: "button", label: "Hide advanced", props: {} },
+          { id: "submit", type: "button", label: "Submit runtime", props: {} },
+        ],
+        events: [
+          {
+            id: "hide-advanced",
+            trigger: "click",
+            source: "hide",
+            inputs: [],
+            outputs: ["advanced"],
+          },
+          {
+            id: "submit-click",
+            trigger: "click",
+            source: "submit",
+            inputs: ["advancedPrompt", "visiblePrompt"],
+            outputs: [],
           },
         ],
       },
