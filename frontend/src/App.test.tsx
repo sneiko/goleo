@@ -364,8 +364,8 @@ describe("Goleo frontend", () => {
   it("applies blocks update envelopes to values and target button runtime state", async () => {
     mockedAPI.loadSchema.mockResolvedValue(blocksClickSchema());
     mockedAPI.sendEvent.mockResolvedValue({
-      result: { kind: "update", value: "Done" },
-      generate: { kind: "update", label: "Generated", disabled: true },
+      result: { __goleo_update__: true, kind: "update", value: "Done" },
+      generate: { __goleo_update__: true, kind: "update", label: "Generated", disabled: true },
     });
     const user = userEvent.setup();
 
@@ -377,6 +377,19 @@ describe("Goleo frontend", () => {
     expect(screen.getByRole("button", { name: "Generated" })).toBeDisabled();
   });
 
+  it("renders unmarked kind update objects as ordinary blocks output values", async () => {
+    mockedAPI.loadSchema.mockResolvedValue(blocksUpdateCollisionSchema());
+    mockedAPI.sendEvent.mockResolvedValue({ result: { kind: "update", status: "ok" } });
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Check" }));
+
+    expect(await screen.findByText(/"kind": "update"/)).toBeInTheDocument();
+    expect(screen.getByText(/"status": "ok"/)).toBeInTheDocument();
+  });
+
   it("runs blocks load events on mount and applies the response", async () => {
     mockedAPI.loadSchema.mockResolvedValue(blocksLoadSchema());
     mockedAPI.sendEvent.mockResolvedValue({ status: "Loaded from server" });
@@ -385,6 +398,17 @@ describe("Goleo frontend", () => {
 
     await waitFor(() => expect(mockedAPI.sendEvent).toHaveBeenCalledWith("blocks-load", "load-status", {}));
     expect(await screen.findByText("Loaded from server")).toBeInTheDocument();
+  });
+
+  it("only runs load-trigger blocks events on mount", async () => {
+    mockedAPI.loadSchema.mockResolvedValue(blocksLoadStrictSchema());
+    mockedAPI.sendEvent.mockResolvedValue({ status: "Loaded once" });
+
+    render(<App />);
+
+    expect(await screen.findByText("Loaded once")).toBeInTheDocument();
+    expect(mockedAPI.sendEvent).toHaveBeenCalledTimes(1);
+    expect(mockedAPI.sendEvent).toHaveBeenCalledWith("blocks-load-strict", "load-status", {});
   });
 
   it("dispatches blocks change events with component values", async () => {
@@ -402,6 +426,36 @@ describe("Goleo frontend", () => {
       }),
     );
     expect(await screen.findByText("Preview: abc")).toBeInTheDocument();
+  });
+
+  it("keeps a blocks source disabled until all concurrent events from that source finish", async () => {
+    mockedAPI.loadSchema.mockResolvedValue(blocksConcurrentClickSchema());
+    const first = deferred<Record<string, unknown>>();
+    const second = deferred<Record<string, unknown>>();
+    mockedAPI.sendEvent.mockImplementation((_interfaceID, eventID) => {
+      if (eventID === "first-click") {
+        return first.promise;
+      }
+      if (eventID === "second-click") {
+        return second.promise;
+      }
+      return Promise.resolve({});
+    });
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Run both" }));
+    expect(screen.getByRole("button", { name: /run both/i })).toBeDisabled();
+    await waitFor(() => expect(mockedAPI.sendEvent).toHaveBeenCalledTimes(2));
+
+    first.resolve({ firstResult: "First done" });
+    expect(await screen.findByText("First done")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /run both/i })).toBeDisabled();
+
+    second.resolve({ secondResult: "Second done" });
+    expect(await screen.findByText("Second done")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run both" })).toBeEnabled();
   });
 
   it("excludes inputs hidden by ancestor layout props from blocks event payloads", async () => {
@@ -429,7 +483,7 @@ describe("Goleo frontend", () => {
   it("excludes inputs hidden by runtime ancestor layout updates from later blocks event payloads", async () => {
     mockedAPI.loadSchema.mockResolvedValue(blocksRuntimeHiddenGroupSchema());
     mockedAPI.sendEvent
-      .mockResolvedValueOnce({ advanced: { kind: "update", visible: false } })
+      .mockResolvedValueOnce({ advanced: { __goleo_update__: true, kind: "update", visible: false } })
       .mockResolvedValueOnce({});
     const user = userEvent.setup();
 
@@ -725,6 +779,44 @@ function blocksLoadSchema(): AppSchema {
   };
 }
 
+function blocksUpdateCollisionSchema(): AppSchema {
+  return {
+    version: "0.1.0",
+    interfaces: [
+      {
+        id: "blocks-update-collision",
+        kind: "blocks",
+        inputs: [],
+        outputs: [],
+        components: [
+          { id: "check", type: "button", label: "Check", props: {} },
+          { id: "result", type: "json", label: "Result", props: {} },
+        ],
+        events: [{ id: "check-click", trigger: "click", source: "check", inputs: [], outputs: ["result"] }],
+      },
+    ],
+  };
+}
+
+function blocksLoadStrictSchema(): AppSchema {
+  return {
+    version: "0.1.0",
+    interfaces: [
+      {
+        id: "blocks-load-strict",
+        kind: "blocks",
+        inputs: [],
+        outputs: [],
+        components: [{ id: "status", type: "textbox", label: "Status", props: {} }],
+        events: [
+          { id: "load-status", trigger: "load", inputs: [], outputs: ["status"] },
+          { id: "ready-status", trigger: "ready", inputs: [], outputs: ["status"] },
+        ],
+      },
+    ],
+  };
+}
+
 function blocksChangeSchema(): AppSchema {
   return {
     version: "0.1.0",
@@ -746,6 +838,29 @@ function blocksChangeSchema(): AppSchema {
             inputs: ["prompt"],
             outputs: ["preview"],
           },
+        ],
+      },
+    ],
+  };
+}
+
+function blocksConcurrentClickSchema(): AppSchema {
+  return {
+    version: "0.1.0",
+    interfaces: [
+      {
+        id: "blocks-concurrent-click",
+        kind: "blocks",
+        inputs: [],
+        outputs: [],
+        components: [
+          { id: "run", type: "button", label: "Run both", props: {} },
+          { id: "firstResult", type: "textbox", label: "First result", props: {} },
+          { id: "secondResult", type: "textbox", label: "Second result", props: {} },
+        ],
+        events: [
+          { id: "first-click", trigger: "click", source: "run", inputs: [], outputs: ["firstResult"] },
+          { id: "second-click", trigger: "click", source: "run", inputs: [], outputs: ["secondResult"] },
         ],
       },
     ],

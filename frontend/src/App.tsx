@@ -245,13 +245,13 @@ function BlocksInterface({ iface }: { iface: InterfaceSchema }) {
   const eventInputIDs = useMemo(() => new Set(events.flatMap((event) => event.inputs)), [events]);
   const eventOutputIDs = useMemo(() => new Set(events.flatMap((event) => event.outputs)), [events]);
   const loadEvents = useMemo(
-    () => events.filter((event) => event.source === undefined || event.trigger === "load"),
+    () => events.filter((event) => event.trigger === "load"),
     [events],
   );
   const [values, setValues] = useInitialValues(leafComponents);
   const [runtime, setRuntime] = useState<Record<string, ComponentRuntimeState>>({});
   const [error, setError] = useState<string | null>(null);
-  const [runningSources, setRunningSources] = useState<Set<string>>(() => new Set());
+  const [runningSources, setRunningSources] = useState<Record<string, number>>({});
   const sentLoadEventsRef = useRef(false);
   const hiddenComponentIDs = useMemo(() => hiddenBlockComponentIDs(components, runtime), [components, runtime]);
 
@@ -292,7 +292,10 @@ function BlocksInterface({ iface }: { iface: InterfaceSchema }) {
   async function runBlockEvent(event: EventSchema, sourceID: string | undefined, nextValues: Values = values) {
     setError(null);
     if (sourceID) {
-      setRunningSources((current) => new Set(current).add(sourceID));
+      setRunningSources((current) => ({
+        ...current,
+        [sourceID]: (current[sourceID] ?? 0) + 1,
+      }));
     }
 
     try {
@@ -308,8 +311,13 @@ function BlocksInterface({ iface }: { iface: InterfaceSchema }) {
     } finally {
       if (sourceID) {
         setRunningSources((current) => {
-          const next = new Set(current);
-          next.delete(sourceID);
+          const next = { ...current };
+          const count = (next[sourceID] ?? 0) - 1;
+          if (count > 0) {
+            next[sourceID] = count;
+          } else {
+            delete next[sourceID];
+          }
           return next;
         });
       }
@@ -365,7 +373,7 @@ function renderBlocksComponents(
     eventOutputIDs: Set<string>;
     onButtonClick: (component: ComponentSchema) => void;
     onValueChange: (component: ComponentSchema, value: unknown) => void;
-    runningSources: Set<string>;
+    runningSources: Record<string, number>;
     runtime: Record<string, ComponentRuntimeState>;
     values: Values;
   },
@@ -385,7 +393,7 @@ function renderBlocksComponents(
       );
     }
 
-    const isRunning = context.runningSources.has(effectiveComponent.id);
+    const isRunning = (context.runningSources[effectiveComponent.id] ?? 0) > 0;
     const disabled = isRunning || props.disabled === true;
 
     if (effectiveComponent.type === "button") {
@@ -515,7 +523,12 @@ function componentRuntimeUpdate(update: ComponentUpdate): ComponentRuntimeState 
 }
 
 function isComponentUpdate(value: unknown): value is ComponentUpdate {
-  return Boolean(value && typeof value === "object" && (value as { kind?: unknown }).kind === "update");
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      (value as { __goleo_update__?: unknown }).__goleo_update__ === true &&
+      (value as { kind?: unknown }).kind === "update",
+  );
 }
 
 function isEditableBlocksComponent(type: string) {

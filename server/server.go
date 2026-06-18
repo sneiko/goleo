@@ -65,6 +65,7 @@ type responseError struct {
 }
 
 const requestIDHeader = "X-Request-ID"
+const updateEnvelopeMarker = "__goleo_update__"
 
 type requestIDContextKey struct{}
 
@@ -1441,7 +1442,10 @@ func componentAt(components []component.Component, index int) []component.Compon
 }
 
 func updateEnvelope(update runtime.Update, components []component.Component, store *assetStore) (map[string]any, error) {
-	payload := map[string]any{"kind": runtime.UpdateKind}
+	payload := map[string]any{
+		updateEnvelopeMarker: true,
+		"kind":               runtime.UpdateKind,
+	}
 	if update.Value != nil {
 		value := update.Value
 		if len(components) > 0 {

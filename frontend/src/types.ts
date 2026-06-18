@@ -30,6 +30,7 @@ export type AppSchema = {
 };
 
 export type ComponentUpdate = {
+  __goleo_update__: true;
   kind: "update";
   value?: unknown;
   visible?: boolean;

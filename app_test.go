@@ -1217,11 +1217,64 @@ func TestEventEndpointReturnsUpdateEnvelope(t *testing.T) {
 		t.Fatalf("decode event response: %v", err)
 	}
 	update := got.Data[run.ID]
-	if update["kind"] != "update" || update["disabled"] != true {
-		t.Fatalf("update = %#v, want disabled update", update)
+	if update["kind"] != "update" || update["__goleo_update__"] != true || update["disabled"] != true {
+		t.Fatalf("update = %#v, want marked disabled update", update)
 	}
 	if _, ok := update["visible"]; ok {
 		t.Fatalf("update = %#v, did not want unset visible field", update)
+	}
+}
+
+func TestEventEndpointReturnsKindUpdateMapAsOrdinaryData(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	var out goleo.Component
+	app.Blocks(func(blocks *goleo.Blocks) {
+		out = blocks.JSON("Result")
+		run := blocks.Button("Run")
+		run.Click(
+			goleo.Handler(func() (map[string]any, error) {
+				return map[string]any{"kind": "update", "status": "ok"}, nil
+			}),
+			goleo.Inputs(),
+			goleo.Outputs(out),
+		)
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	requestBody, err := json.Marshal(map[string]any{
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-1",
+		"data":         map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("marshal event request: %v", err)
+	}
+	resp, err := http.Post(server.URL+"/api/event", "application/json", bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("post event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var got struct {
+		Data map[string]map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode event response: %v", err)
+	}
+	value := got.Data[out.ID]
+	if value["kind"] != "update" || value["status"] != "ok" {
+		t.Fatalf("data = %#v, want ordinary kind update map", value)
+	}
+	if _, ok := value["__goleo_update__"]; ok {
+		t.Fatalf("data = %#v, did not want update marker", value)
 	}
 }
 
