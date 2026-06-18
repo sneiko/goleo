@@ -21,6 +21,7 @@ help:
 	@printf '%s\n' '  make run-audio    Run examples/audio'
 	@printf '%s\n' '  make run-chat     Run examples/chat'
 	@printf '%s\n' '  make run-voice    Run examples/voice'
+	@printf '%s\n' '  make run-blocks   Run examples/blocks'
 	@printf '%s\n' '  make run-http     Run examples/http-wrapper'
 	@printf '%s\n' '  make run-showcase-form  Run examples/showcase-form'
 	@printf '%s\n' '  make run-showcase-chat  Run examples/showcase-chat'
@@ -79,6 +80,10 @@ run-chat:
 .PHONY: run-voice
 run-voice:
 	GOLEO_ADDR=$(GOLEO_ADDR) $(GO) run ./examples/voice
+
+.PHONY: run-blocks
+run-blocks:
+	GOLEO_ADDR=$(GOLEO_ADDR) $(GO) run ./examples/blocks
 
 .PHONY: run-http
 run-http:

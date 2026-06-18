@@ -200,6 +200,7 @@ hello-world demo.
 | `make run-showcase-chat` | [`examples/showcase-chat`](examples/showcase-chat) | Streaming chat transcript with a copilot-style response |
 | `make run-showcase-adapters` | [`examples/showcase-adapters`](examples/showcase-adapters) | Adapter-oriented prompt flow with backend metadata |
 | `make run-voice` | [`examples/voice`](examples/voice) | Full-duplex voice session with mic chunks, interrupt, and reply audio |
+| `make run-blocks` | [`examples/blocks`](examples/blocks) | Blocks interface with click/change/load events, state, and runtime updates |
 
 ## More Examples
 
@@ -210,6 +211,7 @@ The repository keeps the focused integration demos as separate entry points.
 | `make run-simple` | [`examples/simple`](examples/simple) | Minimal function-backed form |
 | `make run-chat` | [`examples/chat`](examples/chat) | Basic streaming chat surface |
 | `make run-audio` | [`examples/audio`](examples/audio) | First-class `Audio` component with app-served playback assets |
+| `make run-blocks` | [`examples/blocks`](examples/blocks) | Event-driven Blocks interface with state, load events, and update envelopes |
 | `make run-voice` | [`examples/voice`](examples/voice) | WebSocket voice runtime with `VoiceHandler` |
 | `make run-http` | [`examples/http-wrapper`](examples/http-wrapper) | Wrap an HTTP endpoint |
 | `OLLAMA_MODEL=llama3.2 make run-ollama` | [`examples/ollama`](examples/ollama) | Stream from Ollama |
