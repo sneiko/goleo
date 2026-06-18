@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { parseServerSentEvents, predict, uploadFile } from "./api";
+import { parseServerSentEvents, predict, sendEvent, uploadFile } from "./api";
 
 describe("api client", () => {
   it("posts predict requests using the existing wire format", async () => {
@@ -63,5 +63,81 @@ describe("api client", () => {
     );
     const body = vi.mocked(fetch).mock.calls[0][1]?.body as FormData;
     expect(body.get("file")).toBe(file);
+  });
+
+  it("posts event requests using the Blocks wire format and returns component data", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url, _init) => {
+        return new Response(
+          JSON.stringify({
+            data: {
+              output: "Done",
+              status: { kind: "update", value: "ready", disabled: false },
+            },
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }),
+    );
+
+    const result = await sendEvent("interface-1", "submit", { prompt: "Ada" });
+
+    expect(result).toEqual({
+      output: "Done",
+      status: { kind: "update", value: "ready", disabled: false },
+    });
+    expect(fetch).toHaveBeenCalledWith("/api/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        interface_id: "interface-1",
+        event_id: "submit",
+        data: { prompt: "Ada" },
+      }),
+    });
+  });
+
+  it("includes request_id when sending event requests with a request id", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url, _init) => {
+        return new Response(JSON.stringify({ data: {} }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+
+    await sendEvent("interface-1", "submit", {}, { requestID: "request-1" });
+
+    expect(fetch).toHaveBeenCalledWith("/api/event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        interface_id: "interface-1",
+        event_id: "submit",
+        data: {},
+        request_id: "request-1",
+      }),
+    });
+  });
+
+  it("throws backend error messages for event request failures", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url, _init) => {
+        return new Response(JSON.stringify({ error: { message: "event failed" } }), {
+          status: 400,
+          statusText: "Bad Request",
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+
+    await expect(sendEvent("interface-1", "submit", {})).rejects.toThrow("event failed");
   });
 });

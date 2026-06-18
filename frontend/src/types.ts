@@ -7,17 +7,38 @@ export type ComponentSchema = {
   items?: ComponentSchema[];
 };
 
+export type EventSchema = {
+  id: string;
+  trigger: string;
+  source: string;
+  inputs: string[];
+  outputs: string[];
+};
+
 export type InterfaceSchema = {
   id: string;
   kind: "interface" | "chat" | "voice" | string;
   inputs: ComponentSchema[];
   outputs: ComponentSchema[];
+  components?: ComponentSchema[];
+  events?: EventSchema[];
 };
 
 export type AppSchema = {
   version: string;
   interfaces: InterfaceSchema[];
 };
+
+export type ComponentUpdate = {
+  kind: "update";
+  value?: unknown;
+  visible?: boolean;
+  disabled?: boolean;
+  choices?: string[];
+  label?: string;
+};
+
+export type EventResponseData = Record<string, unknown | ComponentUpdate>;
 
 export type UploadResponse = {
   id: string;

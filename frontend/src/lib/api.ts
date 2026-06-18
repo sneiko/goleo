@@ -1,5 +1,6 @@
 import type {
   AppSchema,
+  EventResponseData,
   UploadResponse,
   StreamEvent,
   VoiceClientEvent,
@@ -31,6 +32,43 @@ export async function predict(interfaceID: string, data: unknown[]): Promise<unk
 
   const payload = (await response.json()) as { data?: unknown[] };
   return payload.data ?? [];
+}
+
+export type EventOptions = {
+  requestID?: string;
+};
+
+export async function sendEvent(
+  interfaceID: string,
+  eventID: string,
+  data: Record<string, unknown>,
+  options?: EventOptions,
+): Promise<EventResponseData> {
+  const body: {
+    interface_id: string;
+    event_id: string;
+    data: Record<string, unknown>;
+    request_id?: string;
+  } = {
+    interface_id: interfaceID,
+    event_id: eventID,
+    data,
+  };
+  if (options?.requestID !== undefined) {
+    body.request_id = options.requestID;
+  }
+
+  const response = await fetch("/api/event", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response));
+  }
+
+  const payload = (await response.json()) as { data?: EventResponseData };
+  return payload.data ?? {};
 }
 
 export async function stream(
