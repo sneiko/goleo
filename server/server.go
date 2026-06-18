@@ -331,8 +331,6 @@ func handleEvent(
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		logger := app.Logger()
-		rawContext := r.Context()
-		handlerContext, handlerCancel := context.WithCancel(rawContext)
 		request, err := decodeEventRequest(r)
 		if err != nil {
 			warnRequest(logger, r, "event request decode failed", "error", err)
@@ -340,13 +338,16 @@ func handleEvent(
 			return
 		}
 
-		requestID := strings.TrimSpace(request.RequestID)
-		if requestID == "" {
-			requestID = requestIDFromContext(rawContext)
+		requestID, err := canonicalEventRequestID(r, request)
+		if err != nil {
+			warnRequest(logger, r, "event request id invalid", "error", err)
+			writeError(w, http.StatusBadRequest, err)
+			return
 		}
-		if requestID == "" {
-			requestID = newRequestID()
-		}
+		w.Header().Set(requestIDHeader, requestID)
+		rawContext := context.WithValue(r.Context(), requestIDContextKey{}, requestID)
+		r = r.WithContext(rawContext)
+		handlerContext, handlerCancel := context.WithCancel(rawContext)
 		if registry != nil {
 			registry.register(requestID, handlerCancel)
 			defer registry.unregister(requestID)
@@ -861,6 +862,24 @@ func decodeEventRequest(r *http.Request) (eventRequest, error) {
 	return request, nil
 }
 
+func canonicalEventRequestID(r *http.Request, request eventRequest) (string, error) {
+	headerID := strings.TrimSpace(r.Header.Get(requestIDHeader))
+	bodyID := strings.TrimSpace(request.RequestID)
+	if headerID != "" && bodyID != "" && headerID != bodyID {
+		return "", fmt.Errorf("request_id mismatch between header %q and body %q", headerID, bodyID)
+	}
+	if bodyID != "" {
+		return bodyID, nil
+	}
+	if headerID != "" {
+		return headerID, nil
+	}
+	if contextID := requestIDFromContext(r.Context()); contextID != "" {
+		return contextID, nil
+	}
+	return newRequestID(), nil
+}
+
 func handleFrontend() http.Handler {
 	subtree, err := fs.Sub(frontendAssets, "assets")
 	if err != nil {
@@ -895,6 +914,9 @@ func logRequests(logger *slog.Logger, next http.Handler) http.Handler {
 		status := recorder.status
 		if status == 0 {
 			status = http.StatusOK
+		}
+		if responseRequestID := strings.TrimSpace(recorder.Header().Get(requestIDHeader)); responseRequestID != "" {
+			requestID = responseRequestID
 		}
 
 		logger.InfoContext(
@@ -1126,8 +1148,16 @@ func updateStateFromOutputs(app *core.App, interfaceID string, outputs []compone
 			app.SetState(interfaceID, component.ID, nil)
 			continue
 		}
-		app.SetState(interfaceID, component.ID, values[index])
+		app.SetState(interfaceID, component.ID, stateOutputValue(values[index]))
 	}
+}
+
+func stateOutputValue(value any) any {
+	update, ok := value.(runtime.Update)
+	if !ok {
+		return value
+	}
+	return update.Value
 }
 
 func componentsByIDs(components []component.Component, ids []string) ([]component.Component, error) {

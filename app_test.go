@@ -1348,6 +1348,93 @@ func TestEventEndpointUsesOmittedStateInput(t *testing.T) {
 	}
 }
 
+func TestEventEndpointStoresUpdateValueForStateOutput(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	var prompt, state, out goleo.Component
+	app.Blocks(func(blocks *goleo.Blocks) {
+		prompt = blocks.Textbox("Prompt")
+		state = blocks.State("Memory", goleo.WithDefault("initial"))
+		out = blocks.Textbox("Result")
+		save := blocks.Button("Save")
+		read := blocks.Button("Read")
+		save.Click(
+			goleo.Handler(func(input string) (goleo.Update, error) {
+				return goleo.Value(input), nil
+			}),
+			goleo.Inputs(prompt),
+			goleo.Outputs(state),
+		)
+		read.Click(
+			goleo.Handler(func(memory string) (string, error) {
+				return memory, nil
+			}),
+			goleo.Inputs(state),
+			goleo.Outputs(out),
+		)
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	saveBody, err := json.Marshal(map[string]any{
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-1",
+		"data": map[string]any{
+			prompt.ID: "next",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal save request: %v", err)
+	}
+	saveResp, err := http.Post(server.URL+"/api/event", "application/json", bytes.NewReader(saveBody))
+	if err != nil {
+		t.Fatalf("post save event: %v", err)
+	}
+	defer saveResp.Body.Close()
+
+	if saveResp.StatusCode != http.StatusOK {
+		t.Fatalf("save status = %d, want %d", saveResp.StatusCode, http.StatusOK)
+	}
+	var saveGot struct {
+		Data map[string]map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(saveResp.Body).Decode(&saveGot); err != nil {
+		t.Fatalf("decode save response: %v", err)
+	}
+	if update := saveGot.Data[state.ID]; update["kind"] != "update" || update["value"] != "next" {
+		t.Fatalf("state update = %#v, want update value next", update)
+	}
+
+	readBody, err := json.Marshal(map[string]any{
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-2",
+		"data":         map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("marshal read request: %v", err)
+	}
+	readResp, err := http.Post(server.URL+"/api/event", "application/json", bytes.NewReader(readBody))
+	if err != nil {
+		t.Fatalf("post read event: %v", err)
+	}
+	defer readResp.Body.Close()
+
+	if readResp.StatusCode != http.StatusOK {
+		t.Fatalf("read status = %d, want %d", readResp.StatusCode, http.StatusOK)
+	}
+	var readGot struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(readResp.Body).Decode(&readGot); err != nil {
+		t.Fatalf("decode read response: %v", err)
+	}
+	if readGot.Data[out.ID] != "next" {
+		t.Fatalf("data = %#v, want stored update value next", readGot.Data)
+	}
+}
+
 func TestEventEndpointRejectsUnknownSourceComponentID(t *testing.T) {
 	t.Parallel()
 
@@ -1484,6 +1571,12 @@ func TestEventEndpointQueueLimitReturnsError(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("first event handler did not start")
 	}
+	unblocked := false
+	defer func() {
+		if !unblocked {
+			close(unblock)
+		}
+	}()
 
 	resp, err := http.Post(server.URL+"/api/event", "application/json", requestBody("second"))
 	if err != nil {
@@ -1508,6 +1601,7 @@ func TestEventEndpointQueueLimitReturnsError(t *testing.T) {
 	}
 
 	close(unblock)
+	unblocked = true
 	<-firstDone
 	if firstErr != nil {
 		t.Fatalf("first event request failed: %v", firstErr)
@@ -1629,12 +1723,13 @@ func TestEventEndpointSupportsBodyRequestIDCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal event request: %v", err)
 	}
-	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/event", bytes.NewReader(requestBody))
+	requestContext, cancelRequest := context.WithCancel(context.Background())
+	defer cancelRequest()
+	req, err := http.NewRequestWithContext(requestContext, http.MethodPost, server.URL+"/api/event", bytes.NewReader(requestBody))
 	if err != nil {
 		t.Fatalf("create event request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Request-ID", "blocks-header-cleanup-test")
 
 	done := make(chan struct{})
 	go func() {
@@ -1662,14 +1757,7 @@ func TestEventEndpointSupportsBodyRequestIDCancellation(t *testing.T) {
 	defer cancelResp.Body.Close()
 
 	if cancelResp.StatusCode != http.StatusOK {
-		cleanupResp, cleanupErr := http.Post(
-			server.URL+"/api/cancel",
-			"application/json",
-			strings.NewReader(`{"request_id":"blocks-header-cleanup-test"}`),
-		)
-		if cleanupErr == nil {
-			_ = cleanupResp.Body.Close()
-		}
+		cancelRequest()
 		t.Fatalf("cancel status = %d, want %d", cancelResp.StatusCode, http.StatusOK)
 	}
 	select {
@@ -1680,6 +1768,96 @@ func TestEventEndpointSupportsBodyRequestIDCancellation(t *testing.T) {
 
 	if atomic.LoadInt32(&cancelled) == 0 {
 		t.Fatalf("event handler was not cancelled")
+	}
+}
+
+func TestEventEndpointRejectsMismatchedHeaderAndBodyRequestID(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	var prompt goleo.Component
+	app.Blocks(func(blocks *goleo.Blocks) {
+		prompt = blocks.Textbox("Prompt")
+		out := blocks.Textbox("Result")
+		run := blocks.Button("Run")
+		run.Click(
+			goleo.Handler(func(input string) (string, error) { return input, nil }),
+			goleo.Inputs(prompt),
+			goleo.Outputs(out),
+		)
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	requestBody, err := json.Marshal(map[string]any{
+		"request_id":   "body-request-id",
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-1",
+		"data": map[string]any{
+			prompt.ID: "hello",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal event request: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/event", bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("create event request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-ID", "header-request-id")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	assertEventBadRequest(t, resp, "request_id mismatch")
+}
+
+func TestEventEndpointUsesBodyRequestIDAsCanonicalHeader(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	var prompt goleo.Component
+	app.Blocks(func(blocks *goleo.Blocks) {
+		prompt = blocks.Textbox("Prompt")
+		out := blocks.Textbox("Result")
+		run := blocks.Button("Run")
+		run.Click(
+			goleo.Handler(func(input string) (string, error) { return input, nil }),
+			goleo.Inputs(prompt),
+			goleo.Outputs(out),
+		)
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	requestBody, err := json.Marshal(map[string]any{
+		"request_id":   "body-canonical-id",
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-1",
+		"data": map[string]any{
+			prompt.ID: "hello",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal event request: %v", err)
+	}
+	resp, err := http.Post(server.URL+"/api/event", "application/json", bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("post event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := resp.Header.Get("X-Request-ID"); got != "body-canonical-id" {
+		t.Fatalf("X-Request-ID = %q, want body-canonical-id", got)
 	}
 }
 
