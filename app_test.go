@@ -2031,6 +2031,82 @@ func TestEventEndpointRejectsMissingAssetID(t *testing.T) {
 	assertEventBadRequest(t, resp, `asset "missing-asset" not found`)
 }
 
+func TestEventEndpointRejectsUnavailableUploadedAssetID(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	var audio goleo.Component
+	app.Blocks(func(blocks *goleo.Blocks) {
+		audio = blocks.Audio("Prompt")
+		out := blocks.Textbox("Result")
+		run := blocks.Button("Run")
+		run.Click(
+			goleo.Handler(func(input goleo.AudioInput) (string, error) { return input.Name, nil }),
+			goleo.Inputs(audio),
+			goleo.Outputs(out),
+		)
+	})
+
+	firstHandler := app.Handler()
+	firstServer := httptest.NewServer(firstHandler)
+
+	var uploadBody bytes.Buffer
+	writer := multipart.NewWriter(&uploadBody)
+	part, err := writer.CreateFormFile("file", "prompt.wav")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := part.Write([]byte("voice")); err != nil {
+		t.Fatalf("write form file: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+
+	uploadResp, err := http.Post(firstServer.URL+"/api/upload", writer.FormDataContentType(), &uploadBody)
+	if err != nil {
+		t.Fatalf("post upload: %v", err)
+	}
+	defer uploadResp.Body.Close()
+
+	var uploaded map[string]any
+	if err := json.NewDecoder(uploadResp.Body).Decode(&uploaded); err != nil {
+		t.Fatalf("decode upload response: %v", err)
+	}
+	assetID, _ := uploaded["id"].(string)
+	if assetID == "" {
+		t.Fatalf("uploaded asset id is empty: %#v", uploaded)
+	}
+
+	firstServer.Close()
+	if closer, ok := firstHandler.(interface{ Close() error }); ok {
+		if err := closer.Close(); err != nil {
+			t.Fatalf("close first handler: %v", err)
+		}
+	}
+
+	secondServer := httptest.NewServer(app.Handler())
+	defer secondServer.Close()
+
+	requestBody, err := json.Marshal(map[string]any{
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-1",
+		"data": map[string]any{
+			audio.ID: map[string]any{"id": assetID},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal event request: %v", err)
+	}
+	resp, err := http.Post(secondServer.URL+"/api/event", "application/json", bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("post event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	assertEventBadRequest(t, resp, fmt.Sprintf("asset %q not found", assetID))
+}
+
 func TestEventEndpointRejectsUnknownTargetComponentID(t *testing.T) {
 	t.Parallel()
 
@@ -2106,6 +2182,44 @@ func TestEventEndpointReturnsHandlerError(t *testing.T) {
 	defer resp.Body.Close()
 
 	assertEventBadRequest(t, resp, "input 0")
+}
+
+func TestEventEndpointReturnsInvalidHandlerBindingError(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	var prompt goleo.Component
+	app.Blocks(func(blocks *goleo.Blocks) {
+		prompt = blocks.Textbox("Prompt")
+		out := blocks.Textbox("Result")
+		run := blocks.Button("Run")
+		run.Click(
+			goleo.Handler("not a function"),
+			goleo.Inputs(prompt),
+			goleo.Outputs(out),
+		)
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	requestBody, err := json.Marshal(map[string]any{
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-1",
+		"data": map[string]any{
+			prompt.ID: "hello",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal event request: %v", err)
+	}
+	resp, err := http.Post(server.URL+"/api/event", "application/json", bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("post event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	assertEventBadRequest(t, resp, "handler must be a function")
 }
 
 func TestEventEndpointRejectsOutputCardinalityMismatch(t *testing.T) {
