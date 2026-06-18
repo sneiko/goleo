@@ -35,6 +35,16 @@ type predictResponse struct {
 	Data []any `json:"data"`
 }
 
+type eventRequest struct {
+	InterfaceID string         `json:"interface_id"`
+	EventID     string         `json:"event_id"`
+	Data        map[string]any `json:"data"`
+}
+
+type eventResponse struct {
+	Data map[string]any `json:"data"`
+}
+
 type uploadResponse struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -193,6 +203,7 @@ func New(app *core.App) http.Handler {
 	mux.HandleFunc("GET /api/voice/{id}/ws", handleVoice(app, store))
 	mux.HandleFunc("POST /api/predict", handlePredict(app, store, queue, requestRegistry))
 	mux.HandleFunc("POST /api/stream", handleStream(app, store, queue, requestRegistry))
+	mux.HandleFunc("POST /api/event", handleEvent(app, store, queue, requestRegistry))
 	mux.HandleFunc("POST /api/cancel", handleCancel(requestRegistry))
 	logger := app.Logger()
 	mux.HandleFunc("POST /api/upload", handleUpload(logger, store))
@@ -308,6 +319,142 @@ func handlePredict(
 		updateStateFromOutputs(app, iface.ID, iface.Outputs, data)
 
 		writeJSON(w, http.StatusOK, predictResponse{Data: responseData})
+	}
+}
+
+func handleEvent(
+	app *core.App,
+	store *assetStore,
+	queue *queueManager,
+	registry *requestRegistry,
+) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		logger := app.Logger()
+		rawContext := r.Context()
+		handlerContext, handlerCancel := context.WithCancel(rawContext)
+		requestID := requestIDFromContext(rawContext)
+		if requestID == "" {
+			requestID = newRequestID()
+		}
+		if registry != nil {
+			registry.register(requestID, handlerCancel)
+			defer registry.unregister(requestID)
+		}
+
+		request, err := decodeEventRequest(r)
+		if err != nil {
+			warnRequest(logger, r, "event request decode failed", "error", err)
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+
+		iface, event, ok := app.GetEvent(request.InterfaceID, request.EventID)
+		if !ok || iface.Kind != "blocks" {
+			err := fmt.Errorf("event %q not found", request.EventID)
+			warnRequest(
+				logger,
+				r,
+				"event binding not found",
+				"interface_id",
+				request.InterfaceID,
+				"event_id",
+				request.EventID,
+				"error",
+				err,
+			)
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		if event.Handler == nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("event %q does not have handler", event.ID))
+			return
+		}
+
+		release, _, err := queue.acquire(handlerContext, iface.ID)
+		if errors.Is(err, errQueueFull) {
+			writeError(w, http.StatusTooManyRequests, errQueueFull)
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusRequestTimeout, err)
+			return
+		}
+		defer release()
+
+		inputComponents := componentsByIDs(iface.Components, event.Inputs)
+		outputComponents := componentsByIDs(iface.Components, event.Outputs)
+		requestData := valuesForComponents(inputComponents, request.Data)
+		requestData = mergeStateInputs(handlerContext, app, iface.ID, inputComponents, requestData)
+
+		hydrated, err := hydrateAssets(inputComponents, requestData, store)
+		if err != nil {
+			warnRequest(
+				logger,
+				r,
+				"event asset hydration failed",
+				"interface_id",
+				request.InterfaceID,
+				"event_id",
+				request.EventID,
+				"error",
+				err,
+			)
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+
+		values, err := event.Handler.Invoke(handlerContext, hydrated)
+		if err != nil {
+			status := http.StatusBadRequest
+			if isPanicError(err) {
+				status = http.StatusInternalServerError
+				errorRequest(
+					logger,
+					r,
+					"event handler panicked",
+					"interface_id",
+					request.InterfaceID,
+					"event_id",
+					request.EventID,
+					"error",
+					err,
+				)
+			} else {
+				warnRequest(
+					logger,
+					r,
+					"event handler failed",
+					"interface_id",
+					request.InterfaceID,
+					"event_id",
+					request.EventID,
+					"error",
+					err,
+				)
+			}
+			writeError(w, status, err)
+			return
+		}
+
+		responseData, err := dehydrateEventOutputs(outputComponents, values, store)
+		if err != nil {
+			errorRequest(
+				logger,
+				r,
+				"event output dehydration failed",
+				"interface_id",
+				request.InterfaceID,
+				"event_id",
+				request.EventID,
+				"error",
+				err,
+			)
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		updateStateFromOutputs(app, iface.ID, outputComponents, values)
+
+		writeJSON(w, http.StatusOK, eventResponse{Data: mapOutputsByID(outputComponents, responseData)})
 	}
 }
 
@@ -551,6 +698,26 @@ func decodePredictRequest(r *http.Request) (predictRequest, error) {
 	}
 	if request.Data == nil {
 		request.Data = []any{}
+	}
+
+	return request, nil
+}
+
+func decodeEventRequest(r *http.Request) (eventRequest, error) {
+	defer r.Body.Close()
+
+	var request eventRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		return eventRequest{}, err
+	}
+	if request.InterfaceID == "" {
+		return eventRequest{}, errors.New("interface_id is required")
+	}
+	if request.EventID == "" {
+		return eventRequest{}, errors.New("event_id is required")
+	}
+	if request.Data == nil {
+		request.Data = map[string]any{}
 	}
 
 	return request, nil
@@ -825,6 +992,42 @@ func updateStateFromOutputs(app *core.App, interfaceID string, outputs []compone
 	}
 }
 
+func componentsByIDs(components []component.Component, ids []string) []component.Component {
+	flatComponents := flattenLeafComponents(components)
+	byID := make(map[string]component.Component, len(flatComponents))
+	for _, item := range flatComponents {
+		byID[item.ID] = item
+	}
+
+	result := make([]component.Component, 0, len(ids))
+	for _, id := range ids {
+		if item, ok := byID[id]; ok {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func valuesForComponents(components []component.Component, values map[string]any) []any {
+	result := make([]any, 0, len(components))
+	for _, item := range components {
+		result = append(result, values[item.ID])
+	}
+	return result
+}
+
+func mapOutputsByID(components []component.Component, values []any) map[string]any {
+	result := make(map[string]any, len(components))
+	for index, item := range components {
+		if index >= len(values) {
+			result[item.ID] = nil
+			continue
+		}
+		result[item.ID] = values[index]
+	}
+	return result
+}
+
 func hydrateAssets(inputs []component.Component, data []any, store *assetStore) ([]any, error) {
 	hydrated := make([]any, 0, len(data))
 
@@ -895,6 +1098,68 @@ func dehydrateOutputs(components []component.Component, values []any, store *ass
 	}
 
 	return result, nil
+}
+
+func dehydrateEventOutputs(components []component.Component, values []any, store *assetStore) ([]any, error) {
+	result := make([]any, 0, len(values))
+	for index, value := range values {
+		if update, ok := value.(runtime.Update); ok {
+			envelope, err := updateEnvelope(update, componentAt(components, index), store)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, envelope)
+			continue
+		}
+
+		dehydrated, err := dehydrateOutputs(componentAt(components, index), []any{value}, store)
+		if err != nil {
+			return nil, err
+		}
+		if len(dehydrated) == 0 {
+			result = append(result, value)
+			continue
+		}
+		result = append(result, dehydrated[0])
+	}
+	return result, nil
+}
+
+func componentAt(components []component.Component, index int) []component.Component {
+	if index < 0 || index >= len(components) {
+		return nil
+	}
+	return []component.Component{components[index]}
+}
+
+func updateEnvelope(update runtime.Update, components []component.Component, store *assetStore) (map[string]any, error) {
+	payload := map[string]any{"kind": runtime.UpdateKind}
+	if update.Value != nil {
+		value := update.Value
+		if len(components) > 0 {
+			dehydrated, err := dehydrateOutputs(components, []any{update.Value}, store)
+			if err != nil {
+				return nil, err
+			}
+			if len(dehydrated) > 0 {
+				value = dehydrated[0]
+			}
+		}
+		payload["value"] = value
+	}
+	if update.Visible != nil {
+		payload["visible"] = *update.Visible
+	}
+	if update.Disabled != nil {
+		payload["disabled"] = *update.Disabled
+	}
+	if update.Choices != nil {
+		payload["choices"] = append([]string{}, update.Choices...)
+	}
+	if update.Label != nil {
+		payload["label"] = *update.Label
+	}
+	return payload, nil
 }
 
 func asFileOutput(value any) (media.FileLikeOutput, bool, error) {
