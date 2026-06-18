@@ -15,11 +15,11 @@
 - Create: `runtime/update.go`  
   Хранит `Update`, envelope-константу и helper constructors.
 - Create: `core/blocks.go`  
-  Хранит `Blocks`, `ComponentRef`, `EventBinding`, регистрацию `Click/Change/Load`.
+  Хранит `Blocks`, `EventBinding`, регистрацию `Load` и event binder для компонентов.
 - Modify: `component/component.go`  
-  Добавляет `ComponentLike`, чтобы `Inputs(...)`/`Outputs(...)` принимали и обычные компоненты, и refs.
+  Добавляет event binder hooks и методы `Click`/`Change` на `Component`, сохраняя `Inputs(...Component)`/`Outputs(...Component)`.
 - Modify: `component_facade.go`  
-  Экспортирует новый `ComponentLike`, обновляет `Inputs`/`Outputs`.
+  Не меняет сигнатуры `Inputs`/`Outputs`; они остаются `...Component`.
 - Create: `update_facade.go`  
   Экспортирует `Update` и helper constructors.
 - Create: `blocks_facade.go`  
@@ -41,12 +41,10 @@
 - Modify: `README.md`, `docs/usage.md`, `docs/components.md`, `docs/architecture.md`  
   Документирует `Blocks` и `/api/event`.
 
-## Task 1: Runtime Update и ComponentLike
+## Task 1: Runtime Update helpers
 
 **Files:**
 - Create: `runtime/update.go`
-- Modify: `component/component.go`
-- Modify: `component_facade.go`
 - Create: `update_facade.go`
 - Test: `app_test.go`
 
@@ -130,62 +128,33 @@ func Label(value string) Update {
 }
 ```
 
-- [ ] **Step 4: Add ComponentLike support**
+- [ ] **Step 4: Preserve existing component list API**
 
-Modify `component/component.go`:
+Verify `component/component.go` remains:
 
 ```go
-type ComponentLike interface {
-	ComponentValue() Component
+func Inputs(components ...Component) List {
+	return List{Components: append([]Component{}, components...)}
 }
 
-func (component Component) ComponentValue() Component {
-	return component
+func Outputs(components ...Component) List {
+	return List{Components: append([]Component{}, components...)}
 }
 ```
 
-Replace `Inputs` and `Outputs` with:
+Verify `component_facade.go` remains:
 
 ```go
-func Inputs(components ...ComponentLike) List {
-	return List{Components: collectComponents(components...)}
+func Inputs(components ...Component) ComponentList {
+	return component.Inputs(components...)
 }
 
-func Outputs(components ...ComponentLike) List {
-	return List{Components: collectComponents(components...)}
-}
-
-func collectComponents(components ...ComponentLike) []Component {
-	result := make([]Component, 0, len(components))
-	for _, item := range components {
-		if item == nil {
-			continue
-		}
-		result = append(result, item.ComponentValue())
-	}
-	return result
+func Outputs(components ...Component) ComponentList {
+	return component.Outputs(components...)
 }
 ```
 
 - [ ] **Step 5: Update public facade**
-
-Modify `component_facade.go`:
-
-```go
-type ComponentLike = component.ComponentLike
-```
-
-Change:
-
-```go
-func Inputs(components ...ComponentLike) ComponentList {
-	return component.Inputs(components...)
-}
-
-func Outputs(components ...ComponentLike) ComponentList {
-	return component.Outputs(components...)
-}
-```
 
 Create `update_facade.go`:
 
@@ -232,8 +201,8 @@ Expected: PASS.
 Run:
 
 ```bash
-git add runtime/update.go component/component.go component_facade.go update_facade.go app_test.go
-git commit -m "feat: add update helpers and component refs support"
+git add runtime/update.go update_facade.go app_test.go
+git commit -m "feat: add update helpers"
 ```
 
 ## Task 2: Core Blocks builder and schema
@@ -242,6 +211,7 @@ git commit -m "feat: add update helpers and component refs support"
 - Create: `core/blocks.go`
 - Create: `blocks_facade.go`
 - Modify: `core/app.go`
+- Modify: `component/component.go`
 - Test: `app_test.go`
 
 - [ ] **Step 1: Write failing schema test**
@@ -303,7 +273,63 @@ GOCACHE=/tmp/goleo-gocache go test ./... -run TestBlocksSchemaIncludesComponents
 
 Expected: compile failure because `App.Blocks`, `Interface.Components`, and `Interface.Events` are missing.
 
-- [ ] **Step 3: Create `core/blocks.go`**
+- [ ] **Step 3: Add event methods to `component.Component`**
+
+Modify `component/component.go` imports:
+
+```go
+import (
+	"strings"
+
+	"github.com/sneiko/goleo/runtime"
+)
+```
+
+Add below `Component`:
+
+```go
+type EventBinder interface {
+	BindEvent(trigger string, source Component, handler *runtime.HandlerBinding, inputs List, outputs List)
+}
+```
+
+Add unexported field to `Component`:
+
+```go
+eventBinder EventBinder
+```
+
+Add helpers:
+
+```go
+func WithEventBinder(component Component, binder EventBinder) Component {
+	component.eventBinder = binder
+	return component
+}
+
+func (component Component) Click(handler *runtime.HandlerBinding, inputs List, outputs List) {
+	if component.eventBinder == nil {
+		return
+	}
+	component.eventBinder.BindEvent("click", component, handler, inputs, outputs)
+}
+
+func (component Component) Change(handler *runtime.HandlerBinding, inputs List, outputs List) {
+	if component.eventBinder == nil {
+		return
+	}
+	component.eventBinder.BindEvent("change", component, handler, inputs, outputs)
+}
+```
+
+`Inputs` and `Outputs` must remain:
+
+```go
+func Inputs(components ...Component) List
+func Outputs(components ...Component) List
+```
+
+- [ ] **Step 4: Create `core/blocks.go`**
 
 Create `core/blocks.go`:
 
@@ -327,11 +353,6 @@ type EventBinding struct {
 	Handler *runtime.HandlerBinding `json:"-"`
 }
 
-type ComponentRef struct {
-	ID    string
-	block *Blocks
-}
-
 type Blocks struct {
 	id         string
 	components []component.Component
@@ -342,78 +363,59 @@ func newBlocks(id string) *Blocks {
 	return &Blocks{id: id}
 }
 
-func (blocks *Blocks) Textbox(label string, options ...component.Option) ComponentRef {
+func (blocks *Blocks) Textbox(label string, options ...component.Option) component.Component {
 	return blocks.add(component.Textbox(label, options...))
 }
 
-func (blocks *Blocks) Number(label string, options ...component.Option) ComponentRef {
+func (blocks *Blocks) Number(label string, options ...component.Option) component.Component {
 	return blocks.add(component.Number(label, options...))
 }
 
-func (blocks *Blocks) Slider(label string, options ...component.Option) ComponentRef {
+func (blocks *Blocks) Slider(label string, options ...component.Option) component.Component {
 	return blocks.add(component.Slider(label, options...))
 }
 
-func (blocks *Blocks) Checkbox(label string, options ...component.Option) ComponentRef {
+func (blocks *Blocks) Checkbox(label string, options ...component.Option) component.Component {
 	return blocks.add(component.Checkbox(label, options...))
 }
 
-func (blocks *Blocks) Dropdown(label string, choices ...string) ComponentRef {
+func (blocks *Blocks) Dropdown(label string, choices ...string) component.Component {
 	return blocks.add(component.Dropdown(label, choices...))
 }
 
-func (blocks *Blocks) Button(label string, options ...component.Option) ComponentRef {
+func (blocks *Blocks) Button(label string, options ...component.Option) component.Component {
 	return blocks.add(component.Button(label, options...))
 }
 
-func (blocks *Blocks) Markdown(label string, options ...component.Option) ComponentRef {
+func (blocks *Blocks) Markdown(label string, options ...component.Option) component.Component {
 	return blocks.add(component.Markdown(label, options...))
 }
 
-func (blocks *Blocks) JSON(label string, options ...component.Option) ComponentRef {
+func (blocks *Blocks) JSON(label string, options ...component.Option) component.Component {
 	return blocks.add(component.JSON(label, options...))
 }
 
-func (blocks *Blocks) Image(label string, options ...component.Option) ComponentRef {
+func (blocks *Blocks) Image(label string, options ...component.Option) component.Component {
 	return blocks.add(component.Image(label, options...))
 }
 
-func (blocks *Blocks) Audio(label string, options ...component.Option) ComponentRef {
+func (blocks *Blocks) Audio(label string, options ...component.Option) component.Component {
 	return blocks.add(component.Audio(label, options...))
 }
 
-func (blocks *Blocks) File(label string, options ...component.Option) ComponentRef {
+func (blocks *Blocks) File(label string, options ...component.Option) component.Component {
 	return blocks.add(component.File(label, options...))
 }
 
-func (blocks *Blocks) State(label string, options ...component.Option) ComponentRef {
+func (blocks *Blocks) State(label string, options ...component.Option) component.Component {
 	return blocks.add(component.State(label, options...))
 }
 
-func (blocks *Blocks) add(item component.Component) ComponentRef {
+func (blocks *Blocks) add(item component.Component) component.Component {
 	item.ID = blocks.id + "-component-" + strconv.Itoa(len(blocks.components)+1)
+	item = component.WithEventBinder(item, blocks)
 	blocks.components = append(blocks.components, item)
-	return ComponentRef{ID: item.ID, block: blocks}
-}
-
-func (ref ComponentRef) ComponentValue() component.Component {
-	if ref.block == nil {
-		return component.Component{ID: ref.ID}
-	}
-	for _, item := range ref.block.components {
-		if item.ID == ref.ID {
-			return item
-		}
-	}
-	return component.Component{ID: ref.ID}
-}
-
-func (ref ComponentRef) Click(handler *runtime.HandlerBinding, inputs component.List, outputs component.List) {
-	ref.bind("click", handler, inputs, outputs)
-}
-
-func (ref ComponentRef) Change(handler *runtime.HandlerBinding, inputs component.List, outputs component.List) {
-	ref.bind("change", handler, inputs, outputs)
+	return item
 }
 
 func (blocks *Blocks) Load(handler *runtime.HandlerBinding, outputs component.List) {
@@ -425,14 +427,11 @@ func (blocks *Blocks) Load(handler *runtime.HandlerBinding, outputs component.Li
 	})
 }
 
-func (ref ComponentRef) bind(trigger string, handler *runtime.HandlerBinding, inputs component.List, outputs component.List) {
-	if ref.block == nil {
-		return
-	}
-	ref.block.events = append(ref.block.events, EventBinding{
-		ID:      ref.block.id + "-event-" + strconv.Itoa(len(ref.block.events)+1),
+func (blocks *Blocks) BindEvent(trigger string, source component.Component, handler *runtime.HandlerBinding, inputs component.List, outputs component.List) {
+	blocks.events = append(blocks.events, EventBinding{
+		ID:      blocks.id + "-event-" + strconv.Itoa(len(blocks.events)+1),
 		Trigger: trigger,
-		Source:  ref.ID,
+		Source:  source.ID,
 		Inputs:  componentIDs(inputs.Components),
 		Outputs: componentIDs(outputs.Components),
 		Handler: handler,
@@ -448,7 +447,7 @@ func componentIDs(components []component.Component) []string {
 }
 ```
 
-- [ ] **Step 4: Extend `core.Interface` and `core.App`**
+- [ ] **Step 5: Extend `core.Interface` and `core.App`**
 
 Modify `core/app.go`:
 
@@ -533,7 +532,7 @@ func (app *App) GetEvent(interfaceID, eventID string) (Interface, EventBinding, 
 }
 ```
 
-- [ ] **Step 5: Add public Blocks facade**
+- [ ] **Step 6: Add public Blocks facade**
 
 Create `blocks_facade.go`:
 
@@ -543,10 +542,10 @@ package goleo
 import "github.com/sneiko/goleo/core"
 
 type Blocks = core.Blocks
-type ComponentRef = core.ComponentRef
+type ComponentRef = Component
 ```
 
-- [ ] **Step 6: Run tests**
+- [ ] **Step 7: Run tests**
 
 Run:
 
@@ -556,12 +555,12 @@ GOCACHE=/tmp/goleo-gocache go test ./... -run 'TestBlocksSchemaIncludesComponent
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 Run:
 
 ```bash
-git add core/blocks.go blocks_facade.go core/app.go app_test.go
+git add component/component.go core/blocks.go blocks_facade.go core/app.go app_test.go
 git commit -m "feat: add blocks schema"
 ```
 
