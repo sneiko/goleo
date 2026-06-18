@@ -1602,7 +1602,11 @@ func TestEventEndpointQueueLimitReturnsError(t *testing.T) {
 
 	close(unblock)
 	unblocked = true
-	<-firstDone
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("first event request did not finish after unblock")
+	}
 	if firstErr != nil {
 		t.Fatalf("first event request failed: %v", firstErr)
 	}
