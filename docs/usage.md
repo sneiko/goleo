@@ -57,6 +57,9 @@ Create an app with `goleo.New`, register one or more interfaces, then run it.
 - `app.Interface(handler, inputs, outputs)` registers a request/response surface.
 - `app.Chat(handler)` registers a fixed chat form.
 - `app.Voice(handler)` registers a WebSocket duplex voice surface.
+- `app.ConfigureQueue(maxConcurrency, maxQueue)` sets stream/predict concurrency and queue size.
+- `goleo.State(label)` adds a hidden state carrier.
+- `goleo.Row`, `goleo.Column`, `goleo.Group` build layout groups.
 
 Launch options:
 
@@ -129,6 +132,14 @@ app.Chat(goleo.StreamHandler(func(msg string, emit goleo.EmitFunc) error {
 }))
 ```
 
+### Stream status and cancellation
+
+- Status events are emitted for stream handlers: `queued`, `running`, `done`, and `error`.
+- Stream requests can be canceled through `POST /api/cancel` by passing `request_id`.
+- `request_id` is returned as:
+  - `X-Request-ID` response header;
+  - `request_id` field in stream event payload.
+
 ## Voice surface (`Voice`)
 
 `app.Voice` creates a full-duplex session over WebSocket:
@@ -178,13 +189,13 @@ For non-media values, the runtime:
 - reads input array values from `/api/predict` and `/api/stream`;
 - unmarshals each value into target handler argument types.
 
-### File and audio inputs
+### File, image and audio inputs
 
-For media inputs (`File`, `Audio`):
+For media inputs (`File`, `Image`, `Audio`):
 
 - browser sends a reference object with `id`, `name`, `size`, `content_type`, `url`;
 - the server resolves `id` from its ephemeral asset store;
-handler receives `goleo.AudioInput`-like data as:
+handler receives dedicated type for each media kind:
 
 ```go
 type AudioInput struct {
@@ -199,9 +210,12 @@ type AudioInput struct {
 
 `Path` is guaranteed to be server-local for handler-side reading.
 
-### Audio outputs
+`ImageInput` is alias-compatible with `FileInput` in shape, while the output types
+`AudioOutput`, `FileOutput`, and `ImageOutput` share the same required fields.
 
-If an output component has type `audio`, return `goleo.AudioOutput`:
+### Media outputs
+
+If an output component has type `audio`, `file`, or `image`, return one of:
 
 ```go
 type AudioOutput struct {
@@ -211,8 +225,7 @@ type AudioOutput struct {
 }
 ```
 
-The server stores that path in the ephemeral asset store and returns an
-`AudioAsset` descriptor to the frontend:
+The server stores that path in the ephemeral asset store and returns browser-safe descriptors for those output types:
 
 ```go
 type AudioAsset struct {
@@ -232,6 +245,7 @@ The embedded server exposes:
 - `POST /api/predict` handles `Interface` and adapter calls.
 - `POST /api/stream` handles `StreamHandler` output.
 - `POST /api/upload` accepts `multipart/form-data` with field `file`.
+- `POST /api/cancel` accepts `{"request_id":"... "}` to cancel stream work.
 - `GET /api/assets/{id}` serves stored media assets.
 - `GET /api/voice/{id}/ws` starts duplex voice sessions.
 

@@ -1,11 +1,14 @@
 import type {
   AppSchema,
   UploadResponse,
+  StreamEvent,
   VoiceClientEvent,
   VoiceServerEvent,
   VoiceSessionCallbacks,
   VoiceSessionConnection,
 } from "@/types";
+
+const requestIDHeader = "X-Request-ID";
 
 export async function loadSchema(): Promise<AppSchema> {
   const response = await fetch("/api/schema");
@@ -35,14 +38,54 @@ export async function stream(
   data: unknown[],
   onChunk: (chunk: string) => void,
 ): Promise<void> {
+  await streamWithEvents(interfaceID, data, (event) => {
+    if (event.data !== undefined) {
+      onChunk(normalizeStreamChunk(event.data));
+    }
+  });
+}
+
+export async function cancelRequest(requestID: string): Promise<void> {
+  const response = await fetch("/api/cancel", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ request_id: requestID }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response));
+  }
+}
+
+export type StreamOptions = {
+  signal?: AbortSignal;
+  onRequestID?: (requestID: string) => void;
+};
+
+export async function streamWithEvents(
+  interfaceID: string,
+  data: unknown[],
+  onEvent: (event: StreamEvent) => void,
+  options?: StreamOptions,
+): Promise<void> {
+  const signal = options?.signal;
+  const onRequestID = options?.onRequestID;
+
   const response = await fetch("/api/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ interface_id: interfaceID, data }),
+    signal,
   });
   if (!response.ok) {
     throw new Error(await readErrorMessage(response));
   }
+
+  const requestID = response.headers.get(requestIDHeader);
+  if (requestID) {
+    onRequestID?.(requestID);
+  }
+
   if (!response.body) {
     throw new Error("stream response body is empty");
   }
@@ -60,15 +103,29 @@ export async function stream(
     buffer += decoder.decode(value, { stream: true });
     const events = buffer.split("\n\n");
     buffer = events.pop() ?? "";
-    for (const chunk of parseServerSentEvents(events.join("\n\n"))) {
-      onChunk(chunk);
+    for (const event of parseServerSentEventsWithTypes(events.join("\n\n"))) {
+      onEvent(event);
     }
   }
 
   buffer += decoder.decode();
-  for (const chunk of parseServerSentEvents(buffer)) {
-    onChunk(chunk);
+  for (const event of parseServerSentEventsWithTypes(buffer)) {
+    onEvent(event);
   }
+}
+
+function normalizeStreamChunk(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  return JSON.stringify(value);
 }
 
 export async function uploadFile(file: File): Promise<UploadResponse> {
@@ -131,12 +188,9 @@ export function openVoiceSession(interfaceID: string, callbacks: VoiceSessionCal
 }
 
 export function parseServerSentEvents(buffer: string): string[] {
-  return buffer
-    .split("\n\n")
-    .map((rawEvent) => rawEvent.trim())
-    .filter(Boolean)
-    .map(parseServerSentEvent)
-    .filter((chunk): chunk is string => chunk !== null);
+  return parseServerSentEventsWithTypes(buffer)
+    .filter((event) => event.event === "" || event.event === "message" || event.event === "data")
+    .map((event) => normalizeStreamChunk(event.data));
 }
 
 async function readErrorMessage(response: Response): Promise<string> {
@@ -148,7 +202,16 @@ async function readErrorMessage(response: Response): Promise<string> {
   }
 }
 
-function parseServerSentEvent(rawEvent: string): string | null {
+export function parseServerSentEventsWithTypes(buffer: string): StreamEvent[] {
+  return buffer
+    .split("\n\n")
+    .map((rawEvent) => rawEvent.trim())
+    .filter(Boolean)
+    .map(parseServerSentEvent)
+    .filter((event): event is StreamEvent => event !== null);
+}
+
+function parseServerSentEvent(rawEvent: string): StreamEvent | null {
   const lines = rawEvent.split("\n");
   const event =
     lines
@@ -161,9 +224,56 @@ function parseServerSentEvent(rawEvent: string): string | null {
     .join("\n")
     .replaceAll("\\n", "\n");
 
-  if (event === "error") {
-    throw new Error(data || "stream failed");
+  if (!data) {
+    return null;
   }
 
-  return data === "" ? null : data;
+  if (event === "error") {
+    return {
+      event,
+      status: "error",
+      error: data,
+    };
+  }
+
+  let decoded: { [key: string]: unknown } | null = null;
+  try {
+    decoded = JSON.parse(data);
+  } catch {
+    return {
+      event,
+      status: event,
+      data,
+    };
+  }
+
+  const result: StreamEvent = { event, status: event };
+  if (typeof decoded === "object" && decoded !== null) {
+    if (typeof (decoded as { status?: unknown }).status === "string") {
+      result.status = (decoded as { status?: string }).status;
+    }
+    if ("data" in decoded) {
+      result.data = (decoded as { data?: unknown }).data;
+    }
+    if ("error" in decoded) {
+      result.error = (decoded as { error?: string }).error;
+    }
+    if ("request_id" in decoded) {
+      result.request_id = (decoded as { request_id?: string }).request_id;
+    }
+    if ("progress" in decoded) {
+      result.progress = (decoded as { progress?: StreamEvent["progress"] }).progress;
+    }
+
+    if (result.data === undefined) {
+      result.data = data;
+    }
+    return result;
+  }
+
+  return {
+    event,
+    status: event,
+    data,
+  };
 }

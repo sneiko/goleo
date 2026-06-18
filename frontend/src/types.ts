@@ -4,6 +4,7 @@ export type ComponentSchema = {
   label: string;
   props?: Record<string, unknown>;
   choices?: string[];
+  items?: ComponentSchema[];
 };
 
 export type InterfaceSchema = {
@@ -41,9 +42,28 @@ export type VoiceClientEvent = {
 
 export type VoiceServerEvent = {
   type: string;
+  status?: string;
   text?: string;
   state?: string;
   audio?: UploadResponse;
+  progress?: {
+    current?: number;
+    total?: number;
+    message?: string;
+  };
+};
+
+export type StreamEvent = {
+  event: string;
+  status?: string;
+  data?: unknown;
+  request_id?: string;
+  error?: string;
+  progress?: {
+    current?: number;
+    total?: number;
+    message?: string;
+  };
 };
 
 export type VoiceSessionCallbacks = {

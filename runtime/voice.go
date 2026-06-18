@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -21,10 +22,12 @@ type VoiceAudio struct {
 
 // VoiceEvent is the public session event contract for duplex voice flows.
 type VoiceEvent struct {
-	Type  string      `json:"type"`
-	Text  string      `json:"text,omitempty"`
-	State string      `json:"state,omitempty"`
-	Audio *VoiceAudio `json:"audio,omitempty"`
+	Type     string          `json:"type"`
+	Status   string          `json:"status,omitempty"`
+	Text     string          `json:"text,omitempty"`
+	State    string          `json:"state,omitempty"`
+	Progress json.RawMessage `json:"progress,omitempty"`
+	Audio    *VoiceAudio     `json:"audio,omitempty"`
 }
 
 // VoiceBinding is the executable backend bound to a voice session surface.

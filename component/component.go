@@ -9,6 +9,7 @@ type Component struct {
 	Label   string         `json:"label"`
 	Props   map[string]any `json:"props"`
 	Choices []string       `json:"choices,omitempty"`
+	Items   []Component    `json:"items,omitempty"`
 }
 
 // Option customizes component metadata.
@@ -92,6 +93,15 @@ func New(kind string, label string, options ...Option) Component {
 	return component
 }
 
+func newLayout(kind string, label string, items ...Component) Component {
+	return Component{
+		Type:  kind,
+		Label: label,
+		Items: items,
+		Props: map[string]any{},
+	}
+}
+
 func Textbox(label string, options ...Option) Component {
 	return New("textbox", label, options...)
 }
@@ -134,6 +144,23 @@ func Audio(label string, options ...Option) Component {
 
 func File(label string, options ...Option) Component {
 	return New("file", label, options...)
+}
+
+func State(label string, options ...Option) Component {
+	options = append([]Option{WithVisible(false)}, options...)
+	return New("state", label, options...)
+}
+
+func Row(items ...Component) Component {
+	return newLayout("row", "", items...)
+}
+
+func Column(items ...Component) Component {
+	return newLayout("column", "", items...)
+}
+
+func Group(label string, items ...Component) Component {
+	return newLayout("group", label, items...)
 }
 
 func Chatbot(label string, options ...Option) Component {

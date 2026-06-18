@@ -33,8 +33,8 @@ func (record assetRecord) browserValue() media.AudioAsset {
 	}
 }
 
-func (record assetRecord) handlerValue() media.AudioInput {
-	return media.AudioInput{
+func (record assetRecord) handlerValue() media.FileInput {
+	return media.FileInput{
 		ID:          record.ID,
 		Name:        record.Name,
 		Size:        record.Size,
@@ -110,7 +110,7 @@ func (store *assetStore) create(name string, contentType string, reader io.Reade
 	return record, nil
 }
 
-func (store *assetStore) createFromPath(output media.AudioOutput) (assetRecord, error) {
+func (store *assetStore) createFromPath(output media.FileLikeOutput) (assetRecord, error) {
 	source, err := os.Open(output.Path)
 	if err != nil {
 		return assetRecord{}, err

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"mime/multipart"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -480,6 +482,151 @@ func TestPredictEndpointHydratesAudioInputAndDehydratesAudioOutput(t *testing.T)
 	}
 }
 
+func TestPredictEndpointHydratesFileAndImageInputsAndDehydratesFileAndImageOutputs(t *testing.T) {
+	t.Parallel()
+
+	outputDir := t.TempDir()
+	app := goleo.New()
+	app.Interface(
+		goleo.Handler(func(fileInput goleo.FileInput, imageInput goleo.ImageInput) (goleo.FileOutput, goleo.ImageOutput, error) {
+			filePayload, err := os.ReadFile(fileInput.Path)
+			if err != nil {
+				return goleo.FileOutput{}, goleo.ImageOutput{}, err
+			}
+			imagePayload, err := os.ReadFile(imageInput.Path)
+			if err != nil {
+				return goleo.FileOutput{}, goleo.ImageOutput{}, err
+			}
+
+			fileOutputPath := filepath.Join(outputDir, "reply.txt")
+			if err := os.WriteFile(fileOutputPath, bytes.ToUpper(filePayload), 0o600); err != nil {
+				return goleo.FileOutput{}, goleo.ImageOutput{}, err
+			}
+
+			imageOutputPath := filepath.Join(outputDir, "reply-image.txt")
+			if err := os.WriteFile(imageOutputPath, append(imagePayload, []byte("-img")...), 0o600); err != nil {
+				return goleo.FileOutput{}, goleo.ImageOutput{}, err
+			}
+
+			return goleo.FileOutput{
+					Name:        "reply.txt",
+					ContentType: fileInput.ContentType,
+					Path:        fileOutputPath,
+				}, goleo.ImageOutput{
+					Name:        "reply-image.txt",
+					ContentType: imageInput.ContentType,
+					Path:        imageOutputPath,
+				}, nil
+		}),
+		goleo.Inputs(goleo.File("Input file"), goleo.Image("Input image")),
+		goleo.Outputs(goleo.File("Reply file"), goleo.Image("Reply image")),
+	)
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	uploadBody := func(filename, data string) string {
+		var buf bytes.Buffer
+		writer := multipart.NewWriter(&buf)
+		part, err := writer.CreateFormFile("file", filename)
+		if err != nil {
+			t.Fatalf("create form file %q: %v", filename, err)
+		}
+		if _, err := part.Write([]byte(data)); err != nil {
+			t.Fatalf("write form file %q: %v", filename, err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close form writer %q: %v", filename, err)
+		}
+		req, err := http.NewRequest(http.MethodPost, server.URL+"/api/upload", &buf)
+		if err != nil {
+			t.Fatalf("create upload request: %v", err)
+		}
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("upload %q: %v", filename, err)
+		}
+		defer resp.Body.Close()
+
+		var uploaded map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&uploaded); err != nil {
+			t.Fatalf("decode upload response %q: %v", filename, err)
+		}
+		result, ok := uploaded["id"].(string)
+		if !ok || result == "" {
+			t.Fatalf("upload response %q: missing id", filename)
+		}
+		return result
+	}
+
+	fileID := uploadBody("prompt.txt", "alpha")
+	imageID := uploadBody("pic.txt", "image")
+
+	predictBody, err := json.Marshal(map[string]any{
+		"interface_id": "interface-1",
+		"data": []any{
+			map[string]any{"id": fileID},
+			map[string]any{"id": imageID, "name": "pic.txt"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal predict body: %v", err)
+	}
+
+	resp, err := http.Post(server.URL+"/api/predict", "application/json", bytes.NewReader(predictBody))
+	if err != nil {
+		t.Fatalf("post predict: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var got struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode predict response: %v", err)
+	}
+	if len(got.Data) != 2 {
+		t.Fatalf("len(data) = %d, want 2", len(got.Data))
+	}
+
+	fileURL, _ := got.Data[0]["url"].(string)
+	imageURL, _ := got.Data[1]["url"].(string)
+	if fileURL == "" || imageURL == "" {
+		t.Fatalf("missing asset urls in response: %#v", got.Data)
+	}
+
+	fileAssetResp, err := http.Get(server.URL + fileURL)
+	if err != nil {
+		t.Fatalf("get file asset: %v", err)
+	}
+	defer fileAssetResp.Body.Close()
+	var fileAssetBody bytes.Buffer
+	if _, err := fileAssetBody.ReadFrom(fileAssetResp.Body); err != nil {
+		t.Fatalf("read file asset: %v", err)
+	}
+	if fileAssetBody.String() != "ALPHA" {
+		t.Fatalf("file asset = %q, want ALPHA", fileAssetBody.String())
+	}
+
+	imageAssetResp, err := http.Get(server.URL + imageURL)
+	if err != nil {
+		t.Fatalf("get image asset: %v", err)
+	}
+	defer imageAssetResp.Body.Close()
+	var imageAssetBody bytes.Buffer
+	if _, err := imageAssetBody.ReadFrom(imageAssetResp.Body); err != nil {
+		t.Fatalf("read image asset: %v", err)
+	}
+	if imageAssetBody.String() != "image-img" {
+		t.Fatalf("image asset = %q, want image-img", imageAssetBody.String())
+	}
+}
+
 func TestCustomLoggerReceivesRequestLogs(t *testing.T) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
@@ -658,7 +805,129 @@ func TestStreamEndpointEmitsServerSentEvents(t *testing.T) {
 		t.Fatalf("read response: %v", err)
 	}
 	got := responseBody.String()
-	if !strings.Contains(got, "data: one\n\n") || !strings.Contains(got, "data: two\n\n") {
-		t.Fatalf("stream body = %q, want two data events", got)
+	if !strings.Contains(got, `"status":"running"`) {
+		t.Fatalf("stream body = %q, want running status event", got)
+	}
+	if !strings.Contains(got, `"status":"done"`) {
+		t.Fatalf("stream body = %q, want done status event", got)
+	}
+	if !strings.Contains(got, `"data":"one"`) || !strings.Contains(got, `"data":"two"`) {
+		t.Fatalf("stream body = %q, want two chunk payloads", got)
+	}
+}
+
+func TestPredictEndpointQueueLimitReturnsError(t *testing.T) {
+	app := goleo.New()
+	app.ConfigureQueue(1, 0)
+	app.Interface(
+		goleo.Handler(func(input string) (string, error) {
+			time.Sleep(300 * time.Millisecond)
+			return strings.ToUpper(input), nil
+		}),
+		goleo.Inputs(goleo.Textbox("Prompt")),
+		goleo.Outputs(goleo.Textbox("Result")),
+	)
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	requestBody := func(value string) io.Reader {
+		return strings.NewReader(`{"interface_id":"interface-1","data":["` + value + `"]}`)
+	}
+
+	firstDone := make(chan struct{})
+	var firstErr error
+	go func() {
+		_, err := http.Post(server.URL+"/api/predict", "application/json", requestBody("hello"))
+		if err != nil {
+			firstErr = err
+		}
+		close(firstDone)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	resp, err := http.Post(server.URL+"/api/predict", "application/json", requestBody("world"))
+	if err != nil {
+		t.Fatalf("post second predict: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusTooManyRequests)
+	}
+
+	var got struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode queue response: %v", err)
+	}
+	if got.Error.Code != "queue_full" {
+		t.Fatalf("error code = %q, want queue_full", got.Error.Code)
+	}
+
+	<-firstDone
+	if firstErr != nil {
+		t.Fatalf("first predict request failed: %v", firstErr)
+	}
+}
+
+func TestStreamEndpointSupportsCancellation(t *testing.T) {
+	app := goleo.New()
+	var cancelled int32
+	app.Chat(goleo.StreamHandler(func(ctx context.Context, prompt string, emit goleo.EmitFunc) error {
+		for i := 0; i < 100; i++ {
+			select {
+			case <-ctx.Done():
+				atomic.StoreInt32(&cancelled, 1)
+				return ctx.Err()
+			default:
+			}
+
+			emit(strings.Repeat("x", i+1))
+			time.Sleep(20 * time.Millisecond)
+		}
+
+		return nil
+	}))
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	requestBody := strings.NewReader(`{"interface_id":"chat-1","data":["hello"]}`)
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/stream", requestBody)
+	if err != nil {
+		t.Fatalf("create stream request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-ID", "stream-cancel-test")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do stream request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stream status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	time.Sleep(80 * time.Millisecond)
+	cancelResp, err := http.Post(server.URL+"/api/cancel", "application/json", strings.NewReader(`{"request_id":"stream-cancel-test"}`))
+	if err != nil {
+		t.Fatalf("post cancel: %v", err)
+	}
+	defer cancelResp.Body.Close()
+
+	if cancelResp.StatusCode != http.StatusOK {
+		t.Fatalf("cancel status = %d, want %d", cancelResp.StatusCode, http.StatusOK)
+	}
+
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if atomic.LoadInt32(&cancelled) == 0 {
+		t.Fatalf("stream handler was not cancelled")
 	}
 }

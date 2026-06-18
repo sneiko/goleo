@@ -15,6 +15,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -55,14 +56,79 @@ const requestIDHeader = "X-Request-ID"
 
 type requestIDContextKey struct{}
 
+type requestRegistry struct {
+	mu       sync.RWMutex
+	cancels  map[string]context.CancelFunc
+	requests map[string]struct{}
+}
+
+func newRequestRegistry() *requestRegistry {
+	return &requestRegistry{
+		cancels:  map[string]context.CancelFunc{},
+		requests: map[string]struct{}{},
+	}
+}
+
+func (registry *requestRegistry) register(id string, cancel context.CancelFunc) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+
+	registry.requests[id] = struct{}{}
+	registry.cancels[id] = cancel
+}
+
+func (registry *requestRegistry) unregister(id string) {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+
+	delete(registry.requests, id)
+	delete(registry.cancels, id)
+}
+
+func (registry *requestRegistry) cancel(id string) bool {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+
+	cancel, ok := registry.cancels[id]
+	if !ok {
+		return false
+	}
+
+	cancel()
+	delete(registry.requests, id)
+	delete(registry.cancels, id)
+	return true
+}
+
+func (registry *requestRegistry) close() {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+
+	for id, cancel := range registry.cancels {
+		cancel()
+		delete(registry.requests, id)
+		delete(registry.cancels, id)
+	}
+}
+
 type responseRecorder struct {
 	http.ResponseWriter
 	status int
 }
 
+type cancelRequest struct {
+	RequestID string `json:"request_id"`
+}
+
+type cancelResponse struct {
+	RequestID string `json:"request_id"`
+	Cancelled bool   `json:"cancelled"`
+}
+
 type appHandler struct {
-	next  http.Handler
-	store *assetStore
+	next     http.Handler
+	store    *assetStore
+	requests *requestRegistry
 }
 
 func (recorder *responseRecorder) WriteHeader(status int) {
@@ -102,6 +168,9 @@ func (handler *appHandler) Close() error {
 	if handler == nil || handler.store == nil {
 		return nil
 	}
+	if handler.requests != nil {
+		handler.requests.close()
+	}
 
 	return handler.store.close()
 }
@@ -114,20 +183,25 @@ func New(app *core.App) http.Handler {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		})
 	}
+	maxConcurrency, maxQueue := app.QueuePolicy()
+	queue := newQueueManager(maxConcurrency, maxQueue)
+	requestRegistry := newRequestRegistry()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/schema", handleSchema(app))
 	mux.HandleFunc("GET /api/assets/{id}", handleAsset(store))
 	mux.HandleFunc("GET /api/voice/{id}/ws", handleVoice(app, store))
-	mux.HandleFunc("POST /api/predict", handlePredict(app, store))
-	mux.HandleFunc("POST /api/stream", handleStream(app, store))
+	mux.HandleFunc("POST /api/predict", handlePredict(app, store, queue, requestRegistry))
+	mux.HandleFunc("POST /api/stream", handleStream(app, store, queue, requestRegistry))
+	mux.HandleFunc("POST /api/cancel", handleCancel(requestRegistry))
 	logger := app.Logger()
 	mux.HandleFunc("POST /api/upload", handleUpload(logger, store))
 	mux.Handle("/", handleFrontend())
 
 	return &appHandler{
-		next:  logRequests(logger, mux),
-		store: store,
+		next:     logRequests(logger, mux),
+		store:    store,
+		requests: requestRegistry,
 	}
 }
 
@@ -143,9 +217,25 @@ func handleSchema(app *core.App) http.HandlerFunc {
 	}
 }
 
-func handlePredict(app *core.App, store *assetStore) http.HandlerFunc {
+func handlePredict(
+	app *core.App,
+	store *assetStore,
+	queue *queueManager,
+	registry *requestRegistry,
+) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		logger := app.Logger()
+		rawContext := r.Context()
+		handlerContext, handlerCancel := context.WithCancel(rawContext)
+		requestID := requestIDFromContext(rawContext)
+		if requestID == "" {
+			requestID = newRequestID()
+		}
+		if registry != nil {
+			registry.register(requestID, handlerCancel)
+			defer registry.unregister(requestID)
+		}
+
 		request, err := decodePredictRequest(r)
 		if err != nil {
 			warnRequest(logger, r, "predict request decode failed", "error", err)
@@ -161,14 +251,42 @@ func handlePredict(app *core.App, store *assetStore) http.HandlerFunc {
 			return
 		}
 
-		hydrated, err := hydrateAssets(request.Data, store)
+		if iface.Handler == nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("interface %q does not have handler", iface.ID))
+			return
+		}
+
+		release, _, err := queue.acquire(handlerContext, iface.ID)
+		if errors.Is(err, errQueueFull) {
+			writeError(w, http.StatusTooManyRequests, errQueueFull)
+			return
+		}
+		if err != nil {
+			if errors.Is(err, errQueueFull) {
+				writeError(w, http.StatusTooManyRequests, errQueueFull)
+				return
+			}
+
+			if errors.Is(err, context.Canceled) {
+				writeError(w, http.StatusRequestTimeout, err)
+			} else {
+				writeError(w, http.StatusRequestTimeout, err)
+			}
+			return
+		}
+		defer release()
+
+		flattenedInputs := flattenLeafComponents(iface.Inputs)
+		requestData := mergeStateInputs(handlerContext, app, iface.ID, flattenedInputs, request.Data)
+
+		hydrated, err := hydrateAssets(flattenedInputs, requestData, store)
 		if err != nil {
 			warnRequest(logger, r, "predict asset hydration failed", "interface_id", request.InterfaceID, "error", err)
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
 
-		data, err := iface.Handler.Invoke(r.Context(), hydrated)
+		data, err := iface.Handler.Invoke(handlerContext, hydrated)
 		if err != nil {
 			status := http.StatusBadRequest
 			if isPanicError(err) {
@@ -187,14 +305,31 @@ func handlePredict(app *core.App, store *assetStore) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		updateStateFromOutputs(app, iface.ID, iface.Outputs, data)
 
 		writeJSON(w, http.StatusOK, predictResponse{Data: responseData})
 	}
 }
 
-func handleStream(app *core.App, store *assetStore) http.HandlerFunc {
+func handleStream(
+	app *core.App,
+	store *assetStore,
+	queue *queueManager,
+	registry *requestRegistry,
+) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		logger := app.Logger()
+		rawContext := r.Context()
+		handlerContext, handlerCancel := context.WithCancel(rawContext)
+		requestID := requestIDFromContext(rawContext)
+		if requestID == "" {
+			requestID = newRequestID()
+		}
+		if registry != nil {
+			registry.register(requestID, handlerCancel)
+			defer registry.unregister(requestID)
+		}
+
 		request, err := decodePredictRequest(r)
 		if err != nil {
 			warnRequest(logger, r, "stream request decode failed", "error", err)
@@ -210,20 +345,54 @@ func handleStream(app *core.App, store *assetStore) http.HandlerFunc {
 			return
 		}
 
-		hydrated, err := hydrateAssets(request.Data, store)
+		if iface.Handler == nil {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("interface %q does not have stream handler", iface.ID))
+			return
+		}
+
+		release, queued, err := queue.acquire(handlerContext, iface.ID)
+		if errors.Is(err, errQueueFull) {
+			writeError(w, http.StatusTooManyRequests, errQueueFull)
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusRequestTimeout, err)
+			return
+		}
+		defer release()
+
+		flusher, _ := w.(http.Flusher)
+		requestLog := requestID
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set(requestIDHeader, requestLog)
+
+		if queued {
+			sendStreamStatus(w, "queued", requestLog, map[string]any{"status": "queued", "request_id": requestLog, "queued": true}, flusher)
+		}
+		sendStreamStatus(w, "running", requestLog, map[string]any{
+			"status":     "running",
+			"request_id": requestLog,
+			"queued":     queued,
+		}, flusher)
+
+		flattenedInputs := flattenLeafComponents(iface.Inputs)
+		requestData := mergeStateInputs(handlerContext, app, iface.ID, flattenedInputs, request.Data)
+
+		hydrated, err := hydrateAssets(flattenedInputs, requestData, store)
 		if err != nil {
 			warnRequest(logger, r, "stream asset hydration failed", "interface_id", request.InterfaceID, "error", err)
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
 
-		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
+		if flusher != nil {
+			flusher.Flush()
+		}
 
-		flusher, _ := w.(http.Flusher)
-		err = iface.Handler.Stream(r.Context(), hydrated, func(value any) {
-			fmt.Fprintf(w, "data: %s\n\n", encodeEventValue(value))
+		err = iface.Handler.Stream(handlerContext, hydrated, func(value any) {
+			sendStreamData(w, "running", value)
 			if flusher != nil {
 				flusher.Flush()
 			}
@@ -231,10 +400,13 @@ func handleStream(app *core.App, store *assetStore) http.HandlerFunc {
 		if err != nil {
 			if isPanicError(err) {
 				errorRequest(logger, r, "stream handler panicked", "interface_id", request.InterfaceID, "error", err)
+				sendStreamStatus(w, "error", requestLog, map[string]any{"status": "error", "error": err.Error()}, flusher)
 			} else {
 				warnRequest(logger, r, "stream handler failed", "interface_id", request.InterfaceID, "error", err)
+				sendStreamStatus(w, "error", requestLog, map[string]any{"status": "error", "error": err.Error()}, flusher)
 			}
-			fmt.Fprintf(w, "event: error\ndata: %s\n\n", encodeEventValue(err.Error()))
+		} else {
+			sendStreamStatus(w, "done", requestLog, map[string]any{"status": "done", "request_id": requestLog}, flusher)
 		}
 	}
 }
@@ -264,6 +436,31 @@ func handleUpload(logger *slog.Logger, store *assetStore) http.HandlerFunc {
 
 		asset := record.browserValue()
 		writeJSON(w, http.StatusOK, uploadResponse(asset))
+	}
+}
+
+func handleCancel(registry *requestRegistry) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var request cancelRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("invalid cancel request"))
+			return
+		}
+
+		if request.RequestID == "" {
+			writeError(w, http.StatusBadRequest, errors.New("request_id is required"))
+			return
+		}
+
+		if registry == nil || !registry.cancel(request.RequestID) {
+			writeError(w, http.StatusNotFound, fmt.Errorf("request %q not found", request.RequestID))
+			return
+		}
+
+		writeJSON(w, http.StatusOK, cancelResponse{
+			RequestID: request.RequestID,
+			Cancelled: true,
+		})
 	}
 }
 
@@ -472,6 +669,10 @@ func errorCode(status int) string {
 	switch status {
 	case http.StatusBadRequest:
 		return "bad_request"
+	case http.StatusRequestTimeout:
+		return "request_timeout"
+	case http.StatusTooManyRequests:
+		return "queue_full"
 	case http.StatusNotFound:
 		return "not_found"
 	case http.StatusInternalServerError:
@@ -495,14 +696,150 @@ func encodeEventValue(value any) string {
 	return string(payload)
 }
 
+func sendStreamStatus(w http.ResponseWriter, event string, requestID string, payload map[string]any, flusher http.Flusher) {
+	if requestID != "" {
+		payload["request_id"] = requestID
+	}
+	payload["status"] = event
+
+	_ = writeServerSentEvent(w, event, payload)
+}
+
+func sendStreamData(w http.ResponseWriter, status string, value any) {
+	payload := map[string]any{
+		"status": status,
+		"data":   value,
+	}
+	_ = writeServerSentEvent(w, "data", payload)
+}
+
+func writeServerSentEvent(w http.ResponseWriter, event string, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, strings.ReplaceAll(string(data), "\n", "\\n"))
+	return err
+}
+
 func sanitizeFileName(name string) string {
 	replacer := strings.NewReplacer("/", "-", "\\", "-", " ", "-")
 	return replacer.Replace(name)
 }
 
-func hydrateAssets(data []any, store *assetStore) ([]any, error) {
+func flattenLeafComponents(components []component.Component) []component.Component {
+	leafs := make([]component.Component, 0, len(components))
+	for _, component := range components {
+		if isLayoutComponent(component.Type) {
+			leafs = append(leafs, flattenLeafComponents(component.Items)...)
+			continue
+		}
+		leafs = append(leafs, component)
+	}
+	return leafs
+}
+
+func isLayoutComponent(kind string) bool {
+	switch kind {
+	case "row", "column", "group":
+		return true
+	default:
+		return false
+	}
+}
+
+func fileInputFromRecord(record media.FileInput, kind string) any {
+	switch kind {
+	case "audio":
+		return media.AudioInput{
+			ID:          record.ID,
+			Name:        record.Name,
+			Size:        record.Size,
+			ContentType: record.ContentType,
+			Path:        record.Path,
+			URL:         record.URL,
+		}
+	case "image":
+		return media.ImageInput{
+			FileInput: media.FileInput{
+				ID:          record.ID,
+				Name:        record.Name,
+				Size:        record.Size,
+				ContentType: record.ContentType,
+				Path:        record.Path,
+				URL:         record.URL,
+			},
+		}
+	default:
+		return media.FileInput{
+			ID:          record.ID,
+			Name:        record.Name,
+			Size:        record.Size,
+			ContentType: record.ContentType,
+			Path:        record.Path,
+			URL:         record.URL,
+		}
+	}
+}
+
+func mergeStateInputs(_ context.Context, app *core.App, interfaceID string, inputs []component.Component, data []any) []any {
+	merged := make([]any, len(inputs))
+	for index, component := range inputs {
+		var value any
+		if index < len(data) {
+			value = data[index]
+		}
+
+		if component.Type == "state" {
+			if value == nil {
+				if stateValue, ok := app.State(interfaceID, component.ID); ok {
+					value = stateValue
+				} else if value = component.Props["default"]; value == nil {
+					value = nil
+				}
+			}
+			app.SetState(interfaceID, component.ID, value)
+		}
+
+		merged[index] = value
+	}
+
+	if len(data) > len(inputs) {
+		merged = append(merged, data[len(inputs):]...)
+	}
+
+	return merged
+}
+
+func updateStateFromOutputs(app *core.App, interfaceID string, outputs []component.Component, values []any) {
+	flatOutputs := flattenLeafComponents(outputs)
+	for index, component := range flatOutputs {
+		if component.Type != "state" {
+			continue
+		}
+		if index >= len(values) {
+			app.SetState(interfaceID, component.ID, nil)
+			continue
+		}
+		app.SetState(interfaceID, component.ID, values[index])
+	}
+}
+
+func hydrateAssets(inputs []component.Component, data []any, store *assetStore) ([]any, error) {
 	hydrated := make([]any, 0, len(data))
-	for _, item := range data {
+
+	for index, item := range data {
+		if index >= len(inputs) {
+			hydrated = append(hydrated, item)
+			continue
+		}
+
+		component := inputs[index]
+		if component.Type != "audio" && component.Type != "file" && component.Type != "image" {
+			hydrated = append(hydrated, item)
+			continue
+		}
+
 		descriptor, ok := item.(map[string]any)
 		if !ok {
 			hydrated = append(hydrated, item)
@@ -519,27 +856,29 @@ func hydrateAssets(data []any, store *assetStore) ([]any, error) {
 		if !found {
 			return nil, fmt.Errorf("asset %q not found", id)
 		}
-		hydrated = append(hydrated, record.handlerValue())
+		hydrated = append(hydrated, fileInputFromRecord(record.handlerValue(), component.Type))
 	}
 
 	return hydrated, nil
 }
 
 func dehydrateOutputs(components []component.Component, values []any, store *assetStore) ([]any, error) {
+	flatComponents := flattenLeafComponents(components)
+
 	result := make([]any, 0, len(values))
 	for index, value := range values {
-		if index >= len(components) {
+		if index >= len(flatComponents) {
 			result = append(result, value)
 			continue
 		}
 
-		component := components[index]
-		if component.Type != "audio" {
+		component := flatComponents[index]
+		if component.Type != "audio" && component.Type != "file" && component.Type != "image" {
 			result = append(result, value)
 			continue
 		}
 
-		output, ok, err := asAudioOutput(value)
+		output, ok, err := asFileOutput(value)
 		if err != nil {
 			return nil, err
 		}
@@ -558,25 +897,25 @@ func dehydrateOutputs(components []component.Component, values []any, store *ass
 	return result, nil
 }
 
-func asAudioOutput(value any) (media.AudioOutput, bool, error) {
+func asFileOutput(value any) (media.FileLikeOutput, bool, error) {
 	switch output := value.(type) {
 	case media.AudioOutput:
-		return output, output.Path != "", nil
+		return media.FileLikeOutput(output), output.Path != "", nil
 	case *media.AudioOutput:
 		if output == nil {
-			return media.AudioOutput{}, false, nil
+			return media.FileLikeOutput{}, false, nil
 		}
-		return *output, output.Path != "", nil
+		return media.FileLikeOutput(*output), output.Path != "", nil
 	default:
 		payload, err := json.Marshal(value)
 		if err != nil {
-			return media.AudioOutput{}, false, err
+			return media.FileLikeOutput{}, false, err
 		}
-		var decoded media.AudioOutput
+		var decoded media.FileOutput
 		if err := json.Unmarshal(payload, &decoded); err != nil {
-			return media.AudioOutput{}, false, err
+			return media.FileLikeOutput{}, false, err
 		}
-		return decoded, decoded.Path != "", nil
+		return media.FileLikeOutput(decoded), decoded.Path != "", nil
 	}
 }
 

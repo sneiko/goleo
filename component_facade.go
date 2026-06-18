@@ -102,6 +102,22 @@ func File(label string, options ...ComponentOption) Component {
 	return component.File(label, options...)
 }
 
+func State(label string, options ...ComponentOption) Component {
+	return component.State(label, options...)
+}
+
+func Row(components ...Component) Component {
+	return component.Row(components...)
+}
+
+func Column(components ...Component) Component {
+	return component.Column(components...)
+}
+
+func Group(label string, components ...Component) Component {
+	return component.Group(label, components...)
+}
+
 func Chatbot(label string, options ...ComponentOption) Component {
 	return component.Chatbot(label, options...)
 }

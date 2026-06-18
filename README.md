@@ -47,8 +47,8 @@ The embedded UI supports typed form controls and structured outputs out of the
 box.
 
 Built-in constructors include `Textbox`, `Number`, `Slider`, `Checkbox`,
-`Dropdown`, `Button`, `Markdown`, `JSON`, `Image`, `Audio`, `File`, and
-`Chatbot`.
+`Dropdown`, `Button`, `Markdown`, `JSON`, `Image`, `Audio`, `File`, `State`,
+`Row`, `Column`, `Group`, and `Chatbot`.
 
 You can also use `CustomComponent` when you need to introduce a schema type
 before a first-class constructor exists.
@@ -79,6 +79,12 @@ app.Interface(
  goleo.Outputs(goleo.Textbox("Summary"), goleo.Audio("Reply audio")),
 )
 ```
+
+To keep richer demo behavior visible:
+
+- tune throughput with `app.ConfigureQueue(maxConcurrency, maxQueue)`;
+- cancel stream runs with `POST /api/cancel` and returned `request_id`;
+- carry session values in `goleo.State(...)`.
 
 Use `Voice` when you need a live session over WebSocket with microphone chunks,
 interrupts, and mixed text/audio output events. The browser connects to

@@ -46,9 +46,10 @@ describe("Goleo frontend", () => {
 
   it("keeps streamed chat messages in a transcript", async () => {
     mockedAPI.loadSchema.mockResolvedValue(chatSchema());
-    mockedAPI.stream.mockImplementation(async (_id, _data, onChunk) => {
-      onChunk("Hel");
-      onChunk("lo");
+    mockedAPI.streamWithEvents.mockImplementation(async (_id, _data, onEvent) => {
+      onEvent({ event: "running", status: "running", data: "Hel" });
+      onEvent({ event: "data", status: "running", data: "lo" });
+      onEvent({ event: "done", status: "done" });
     });
     const user = userEvent.setup();
 
@@ -56,7 +57,14 @@ describe("Goleo frontend", () => {
 
     await user.type(await screen.findByLabelText("Message"), "Hi{Enter}");
 
-    expect(mockedAPI.stream).toHaveBeenCalledWith("chat-1", ["Hi"], expect.any(Function));
+    expect(mockedAPI.streamWithEvents).toHaveBeenCalledWith(
+      "chat-1",
+      ["Hi"],
+      expect.any(Function),
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+      }),
+    );
     expect(await screen.findByText("Hi")).toBeInTheDocument();
     expect(await screen.findByText("Hello")).toBeInTheDocument();
 

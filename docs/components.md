@@ -15,7 +15,8 @@ Every component in `goleo` is emitted as schema JSON for frontend rendering:
 Useful factory functions are exported at package level:
 
 `Textbox`, `Number`, `Slider`, `Checkbox`, `Dropdown`, `Button`, `Markdown`,
-`JSON`, `Image`, `Audio`, `File`, `Chatbot`, `CustomComponent`.
+`JSON`, `Image`, `Audio`, `File`, `State`, `Row`, `Column`, `Group`, `Chatbot`,
+`CustomComponent`.
 
 Use `Inputs(...)` and `Outputs(...)` to pass ordered lists into an `Interface`.
 
@@ -30,6 +31,7 @@ Use `Inputs(...)` and `Outputs(...)` to pass ordered lists into an `Interface`.
 - `WithDisabled(value)` and `WithVisible(value)`.
 - `WithAccept(value)` for mime/type filters on file-like inputs.
 - `WithMultiple(value)` for file-like multi-select.
+- `WithVisible(value)` to hide components (commonly used for `State`).
 
 ## Built-ins
 
@@ -125,6 +127,13 @@ Generic file upload input.
 - Supports `WithAccept`, `WithMultiple`.
 - Common use: PDFs, CSV, images, archives.
 
+### File & Image Outputs
+
+`Audio`, `File`, and `Image` output components use the same output contract:
+
+- handler returns `goleo.AudioOutput`, `goleo.FileOutput`, or `goleo.ImageOutput`;
+- runtime stores the payload path into `/api/assets/{id}` and returns descriptor metadata.
+
 ### Chatbot
 
 Output list for chat transcript in `Chat`.
@@ -138,6 +147,24 @@ Output list for chat transcript in `Chat`.
 
 - Works for front-end extensions and experimental integrations.
 - Use the same `kind` string expected by your frontend implementation.
+
+### State
+
+`State` is a hidden component for per-interface state persistence.
+
+- placed in `Inputs`, it participates in request argument position and stores value
+  in memory between calls;
+- placed in `Outputs`, it stores value returned from handler for next render cycle.
+- `State` is invisible by default in the form (`visible=false`).
+
+### Layout helpers
+
+`Row`, `Column`, and `Group` are container components used to group and arrange
+inputs/outputs.
+
+- `Row` arranges items in horizontal grid columns.
+- `Column` stacks items vertically.
+- `Group` adds a labeled group.
 
 ## Inputs vs outputs
 
@@ -161,12 +188,19 @@ Standard Go types convert through JSON encoding/decoding:
 - `string`, `bool`, `int`, `float64`, structs, maps, slices.
 - custom struct types are supported through standard JSON unmarshal into typed args.
 
-### Audio value shape
+### Audio / File / Image value shape
 
-`Audio` input handler signature should use `goleo.AudioInput`.
+`Audio`/`File`/`Image` input handler signatures should use `goleo.AudioInput`,
+`goleo.FileInput`, or `goleo.ImageInput`.
 
 - `ID`, `Name`, `Size`, `ContentType`, `Path`, `URL`.
 - `Path` is server local and exists while the asset is in store.
+
+Return values can be:
+
+- `goleo.AudioOutput` for audio outputs,
+- `goleo.FileOutput` for file outputs,
+- `goleo.ImageOutput` for image outputs.
 
 ### Recommended mapping pattern
 

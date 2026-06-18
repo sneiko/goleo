@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, FileAudio, FileText, Mic, PhoneCall, Send, Square } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -19,11 +19,19 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { loadSchema, openVoiceSession, predict, stream, uploadFile } from "@/lib/api";
+import {
+  loadSchema,
+  openVoiceSession,
+  cancelRequest,
+  streamWithEvents,
+  uploadFile,
+  predict,
+} from "@/lib/api";
 import type {
   AppSchema,
   ComponentSchema,
   InterfaceSchema,
+  StreamEvent,
   UploadResponse,
   VoiceServerEvent,
   VoiceSessionConnection,
@@ -149,24 +157,26 @@ function LoadingState() {
 }
 
 function FormInterface({ iface, demoMode }: { iface: InterfaceSchema; demoMode: DemoMode }) {
-  const [values, setValues] = useInitialValues(iface.inputs);
-  const [outputs, setOutputs] = useState<Outputs>(() => initialOutputs(iface.outputs, demoMode));
-  const [error, setError] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const hasOutputValues = iface.outputs.some((component) => outputs[component.id] !== undefined);
   const isOutputShowcase = demoMode === "readme-outputs";
   const renderedInputs = isOutputShowcase ? outputShowcaseInputs(iface.inputs) : iface.inputs;
+  const inputFields = flattenLeafComponents(renderedInputs);
+  const outputFields = flattenLeafComponents(iface.outputs);
+  const [values, setValues] = useInitialValues(inputFields);
+  const [outputs, setOutputs] = useState<Outputs>(() => initialOutputs(outputFields, demoMode));
+  const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const hasOutputValues = outputFields.some((component) => outputs[component.id] !== undefined);
 
-  async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
     setIsSubmitting(true);
     try {
       const result = await predict(
         iface.id,
-        iface.inputs.map((component) => values[component.id] ?? ""),
+        inputFields.map((component) => values[component.id] ?? ""),
       );
-      setOutputs(Object.fromEntries(iface.outputs.map((component, index) => [component.id, result[index]])));
+      setOutputs(Object.fromEntries(outputFields.map((component, index) => [component.id, result[index]])));
     } catch (submitError) {
       setError(errorMessage(submitError));
     } finally {
@@ -191,21 +201,15 @@ function FormInterface({ iface, demoMode }: { iface: InterfaceSchema; demoMode: 
           }
         >
           <FieldGroup className="gap-5">
-            {renderedInputs.map((component) => (
-              <SchemaInput
-                key={component.id}
-                component={component}
-                disabled={isSubmitting}
-                value={values[component.id]}
-                onChange={(value) => setValues((current) => ({ ...current, [component.id]: value }))}
-              />
-            ))}
+            {renderSchemaInputs(renderedInputs, isSubmitting, values, (component, value) => {
+              setValues((current) => ({ ...current, [component.id]: value }));
+            })}
             {error ? <ErrorAlert title="Request failed" message={error} /> : null}
           </FieldGroup>
           {hasOutputValues ? (
             <section className="flex flex-col gap-3">
-              {iface.outputs.map((component) => (
-                <OutputBlock key={component.id} component={component} value={outputs[component.id]} />
+              {renderSchemaOutputs(iface.outputs, outputs).map((node) => (
+                <OutputBlock key={node.key} component={node.component} value={node.value} />
               ))}
             </section>
           ) : null}
@@ -226,6 +230,10 @@ function ChatInterface({ iface, demoMode }: { iface: InterfaceSchema; demoMode: 
   const [messages, setMessages] = useState<ChatMessage[]>(() => initialChatMessages(demoMode));
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [streamPhase, setStreamPhase] = useState<"idle" | "queued" | "running">("idle");
+  const [streamRequestID, setStreamRequestID] = useState<string | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const baseMessages = useRef<ChatMessage[]>(initialChatMessages(demoMode));
   const input = iface.inputs[0] ?? { id: `${iface.id}-message`, type: "textbox", label: "Message", props: {} };
 
   async function submitMessage() {
@@ -237,24 +245,106 @@ function ChatInterface({ iface, demoMode }: { iface: InterfaceSchema; demoMode: 
     setError(null);
     setMessage("");
     setIsSubmitting(true);
+    setStreamPhase("queued");
     setMessages((current) => [...current, { role: "user", content: trimmed }, { role: "assistant", content: "" }]);
 
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    setStreamRequestID(null);
+
     try {
-      await stream(iface.id, [trimmed], (chunk) => {
-        setMessages((current) => {
-          const next = [...current];
-          const last = next[next.length - 1];
-          if (last?.role === "assistant") {
-            next[next.length - 1] = { ...last, content: last.content + chunk };
+      await streamWithEvents(
+        iface.id,
+        [trimmed],
+        (event) => {
+          if (event.status === "running") {
+            setStreamPhase("running");
           }
-          return next;
-        });
-      });
+
+          if (event.status === "queued") {
+            setStreamPhase("queued");
+          }
+
+          if (event.status === "error") {
+            setStreamPhase("idle");
+            if (event.error) {
+              setError(event.error);
+            }
+            return;
+          }
+
+          if (event.data === undefined) {
+            return;
+          }
+
+          const chunk = normalizeStreamValue(event.data);
+          if (chunk === "") {
+            return;
+          }
+
+          setMessages((current) => {
+            const next = [...current];
+            const last = next[next.length - 1];
+            if (last?.role === "assistant") {
+              next[next.length - 1] = { ...last, content: last.content + chunk };
+            }
+            return next;
+          });
+        },
+        {
+          signal: controller.signal,
+          onRequestID: setStreamRequestID,
+        },
+      );
     } catch (streamError) {
+      if (streamError instanceof DOMException && streamError.name === "AbortError") {
+        return;
+      }
+
       setError(errorMessage(streamError));
+      setStreamPhase("idle");
     } finally {
       setIsSubmitting(false);
+      setStreamRequestID(null);
+      setStreamPhase("idle");
     }
+  }
+
+  async function stopGeneration() {
+    abortControllerRef.current?.abort();
+    if (streamRequestID) {
+      await cancelRequest(streamRequestID).catch((error) => {
+        if (error instanceof Error) {
+          setError(error.message);
+        }
+      });
+      setStreamRequestID(null);
+    }
+  }
+
+  function clearHistory() {
+    setMessages(baseMessages.current);
+    setError(null);
+  }
+
+  function copyHistory() {
+    void navigator.clipboard.writeText(
+      messages
+        .map((entry) => `${entry.role === "user" ? "You" : "Assistant"}: ${entry.content}`)
+        .join("\n"),
+    );
+  }
+
+  function downloadHistory() {
+    const payload = messages
+      .map((entry) => `${entry.role === "user" ? "You" : "Assistant"}: ${entry.content}`)
+      .join("\n");
+    const blob = new Blob([payload], { type: "text/plain;charset=utf-8" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `${iface.id}-chat.txt`;
+    link.click();
+    URL.revokeObjectURL(link.href);
   }
 
   return (
@@ -305,10 +395,27 @@ function ChatInterface({ iface, demoMode }: { iface: InterfaceSchema; demoMode: 
           />
         </Field>
       </CardContent>
-      <CardFooter className="border-t bg-card/55">
+      <CardFooter className="grid gap-3 border-t bg-card/55 sm:grid-cols-[repeat(5,minmax(0,auto))]">
         <Button type="button" disabled={isSubmitting || message.trim() === ""} onClick={() => void submitMessage()}>
           {isSubmitting ? <Spinner /> : <Send data-icon="inline-start" />}
-          Send
+          {isSubmitting ? (streamPhase === "queued" ? "Queued" : "Running") : "Send"}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={!isSubmitting}
+          onClick={() => void stopGeneration()}
+        >
+          Stop
+        </Button>
+        <Button type="button" variant="outline" onClick={copyHistory}>
+          Copy
+        </Button>
+        <Button type="button" variant="outline" onClick={downloadHistory}>
+          Download
+        </Button>
+        <Button type="button" variant="secondary" onClick={clearHistory}>
+          Clear history
         </Button>
       </CardFooter>
     </Card>
@@ -530,6 +637,10 @@ function SchemaInput({
     return null;
   }
 
+  if (isLayoutComponent(component.type)) {
+    return null;
+  }
+
   const defaultValue = value ?? props.default ?? "";
 
   if (component.type === "number" || component.type === "slider") {
@@ -611,6 +722,99 @@ function SchemaInput({
       />
     </Field>
   );
+}
+
+function renderSchemaInputs(
+  components: ComponentSchema[],
+  disabled: boolean,
+  values: Values,
+  onChange: (component: ComponentSchema, value: unknown) => void,
+) {
+  return components.map((component) => {
+    if (isLayoutComponent(component.type)) {
+      return (
+        <LayoutBlock key={component.id} type={component.type} label={component.label}>
+          {renderSchemaInputs(component.items ?? [], disabled, values, onChange)}
+        </LayoutBlock>
+      );
+    }
+
+    return (
+      <SchemaInput
+        key={component.id}
+        component={component}
+        disabled={disabled}
+        value={values[component.id]}
+        onChange={(value) => onChange(component, value)}
+      />
+    );
+  });
+}
+
+function renderSchemaOutputs(
+  components: ComponentSchema[],
+  outputs: Outputs,
+): { key: string; component: ComponentSchema; value: unknown }[] {
+  const rows: { key: string; component: ComponentSchema; value: unknown }[] = [];
+
+  for (const component of components) {
+    if (isLayoutComponent(component.type)) {
+      if (component.items?.length) {
+        rows.push(...renderSchemaOutputs(component.items, outputs));
+      }
+      continue;
+    }
+
+    rows.push({
+      key: component.id,
+      component,
+      value: outputs[component.id],
+    });
+  }
+
+  return rows;
+}
+
+function LayoutBlock({
+  type,
+  label,
+  children,
+}: {
+  type: string;
+  label: string;
+  children: ReactNode;
+}) {
+  if (type === "row") {
+    return <div className="grid gap-5 rounded-[1.25rem] border bg-background/70 p-4 sm:grid-cols-2">{children}</div>;
+  }
+
+  if (type === "column") {
+    return <div className="grid gap-5">{children}</div>;
+  }
+
+  return (
+    <section className="grid gap-4 rounded-[1.25rem] border bg-background/70 p-4">
+      <div className="text-xs uppercase tracking-[0.16em] text-muted-foreground">{label}</div>
+      <div className="grid gap-4">{children}</div>
+    </section>
+  );
+}
+
+function isLayoutComponent(type: string) {
+  return type === "row" || type === "column" || type === "group";
+}
+
+function flattenLeafComponents(components: ComponentSchema[]): ComponentSchema[] {
+  const result: ComponentSchema[] = [];
+  for (const component of components) {
+    if (isLayoutComponent(component.type)) {
+      result.push(...flattenLeafComponents(component.items ?? []));
+      continue;
+    }
+    result.push(component);
+  }
+
+  return result;
 }
 
 function AudioInput({
@@ -755,7 +959,23 @@ function OutputBlock({ component, value }: { component: ComponentSchema; value: 
     return null;
   }
 
-  if (component.type === "audio" && isUploadResponse(value)) {
+  if ((component.type === "audio" || component.type === "image") && isUploadResponse(value)) {
+    if (component.type === "image") {
+      return (
+        <section className="rounded-[1.25rem] border bg-background/80 p-4 shadow-sm">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold">{component.label}</h3>
+            <span className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{component.type}</span>
+          </div>
+          <img
+            alt={value.name}
+            className="max-h-72 w-full rounded-xl border bg-muted/45 object-cover"
+            src={value.url}
+          />
+        </section>
+      );
+    }
+
     return (
       <section className="rounded-[1.25rem] border bg-background/80 p-4 shadow-sm">
         <div className="mb-3 flex items-center justify-between gap-3">
@@ -859,6 +1079,20 @@ function initialOutputs(components: ComponentSchema[], demoMode: DemoMode): Outp
       return seededValue === undefined ? [] : [[component.id, seededValue]];
     }),
   );
+}
+
+function normalizeStreamValue(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  return JSON.stringify(value);
 }
 
 function initialChatMessages(demoMode: DemoMode): ChatMessage[] {
