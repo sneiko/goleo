@@ -3,6 +3,7 @@ package goleo
 import "github.com/sneiko/goleo/component"
 
 type Component = component.Component
+type ComponentLike = component.ComponentLike
 type ComponentOption = component.Option
 type ComponentList = component.List
 
@@ -122,10 +123,10 @@ func Chatbot(label string, options ...ComponentOption) Component {
 	return component.Chatbot(label, options...)
 }
 
-func Inputs(components ...Component) ComponentList {
+func Inputs(components ...ComponentLike) ComponentList {
 	return component.Inputs(components...)
 }
 
-func Outputs(components ...Component) ComponentList {
+func Outputs(components ...ComponentLike) ComponentList {
 	return component.Outputs(components...)
 }

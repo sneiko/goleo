@@ -12,6 +12,14 @@ type Component struct {
 	Items   []Component    `json:"items,omitempty"`
 }
 
+type ComponentLike interface {
+	ComponentValue() Component
+}
+
+func (component Component) ComponentValue() Component {
+	return component
+}
+
 // Option customizes component metadata.
 type Option func(*Component)
 
@@ -172,10 +180,21 @@ type List struct {
 	Components []Component
 }
 
-func Inputs(components ...Component) List {
-	return List{Components: append([]Component{}, components...)}
+func Inputs(components ...ComponentLike) List {
+	return List{Components: collectComponents(components...)}
 }
 
-func Outputs(components ...Component) List {
-	return List{Components: append([]Component{}, components...)}
+func Outputs(components ...ComponentLike) List {
+	return List{Components: collectComponents(components...)}
+}
+
+func collectComponents(components ...ComponentLike) []Component {
+	result := make([]Component, 0, len(components))
+	for _, item := range components {
+		if item == nil {
+			continue
+		}
+		result = append(result, item.ComponentValue())
+	}
+	return result
 }

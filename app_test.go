@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,30 @@ import (
 
 	"github.com/sneiko/goleo"
 )
+
+func TestUpdateHelpersBuildPointerFields(t *testing.T) {
+	t.Parallel()
+
+	disabled := goleo.Disabled(true)
+	if disabled.Disabled == nil || *disabled.Disabled != true {
+		t.Fatalf("Disabled helper = %#v, want pointer true", disabled.Disabled)
+	}
+
+	visible := goleo.Visible(false)
+	if visible.Visible == nil || *visible.Visible != false {
+		t.Fatalf("Visible helper = %#v, want pointer false", visible.Visible)
+	}
+
+	label := goleo.Label("Run")
+	if label.Label == nil || *label.Label != "Run" {
+		t.Fatalf("Label helper = %#v, want Run", label.Label)
+	}
+
+	choices := goleo.Choices("a", "b")
+	if !reflect.DeepEqual(choices.Choices, []string{"a", "b"}) {
+		t.Fatalf("Choices helper = %#v, want [a b]", choices.Choices)
+	}
+}
 
 func TestInterfaceSchemaIncludesComponents(t *testing.T) {
 	t.Parallel()
