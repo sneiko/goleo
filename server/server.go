@@ -36,6 +36,7 @@ type predictResponse struct {
 }
 
 type eventRequest struct {
+	RequestID   string         `json:"request_id,omitempty"`
 	InterfaceID string         `json:"interface_id"`
 	EventID     string         `json:"event_id"`
 	Data        map[string]any `json:"data"`
@@ -332,7 +333,17 @@ func handleEvent(
 		logger := app.Logger()
 		rawContext := r.Context()
 		handlerContext, handlerCancel := context.WithCancel(rawContext)
-		requestID := requestIDFromContext(rawContext)
+		request, err := decodeEventRequest(r)
+		if err != nil {
+			warnRequest(logger, r, "event request decode failed", "error", err)
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+
+		requestID := strings.TrimSpace(request.RequestID)
+		if requestID == "" {
+			requestID = requestIDFromContext(rawContext)
+		}
 		if requestID == "" {
 			requestID = newRequestID()
 		}
@@ -341,16 +352,51 @@ func handleEvent(
 			defer registry.unregister(requestID)
 		}
 
-		request, err := decodeEventRequest(r)
-		if err != nil {
-			warnRequest(logger, r, "event request decode failed", "error", err)
-			writeError(w, http.StatusBadRequest, err)
+		iface, ok := app.GetInterface(request.InterfaceID)
+		if !ok {
+			err := fmt.Errorf("interface %q not found", request.InterfaceID)
+			warnRequest(
+				logger,
+				r,
+				"event interface not found",
+				"interface_id",
+				request.InterfaceID,
+				"event_id",
+				request.EventID,
+				"error",
+				err,
+			)
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		if iface.Kind != "blocks" {
+			err := fmt.Errorf("interface %q is not a blocks interface", request.InterfaceID)
+			warnRequest(
+				logger,
+				r,
+				"event interface is not blocks",
+				"interface_id",
+				request.InterfaceID,
+				"event_id",
+				request.EventID,
+				"error",
+				err,
+			)
+			writeError(w, http.StatusNotFound, err)
 			return
 		}
 
-		iface, event, ok := app.GetEvent(request.InterfaceID, request.EventID)
-		if !ok || iface.Kind != "blocks" {
-			err := fmt.Errorf("event %q not found", request.EventID)
+		var event core.EventBinding
+		eventFound := false
+		for _, candidate := range iface.Events {
+			if candidate.ID == request.EventID {
+				event = candidate
+				eventFound = true
+				break
+			}
+		}
+		if !eventFound {
+			err := fmt.Errorf("event %q not found for interface %q", request.EventID, request.InterfaceID)
 			warnRequest(
 				logger,
 				r,
@@ -413,7 +459,22 @@ func handleEvent(
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		requestData := valuesForComponents(inputComponents, request.Data)
+		requestData, err := valuesForComponents(inputComponents, request.Data)
+		if err != nil {
+			warnRequest(
+				logger,
+				r,
+				"event input data invalid",
+				"interface_id",
+				request.InterfaceID,
+				"event_id",
+				request.EventID,
+				"error",
+				err,
+			)
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		requestData = mergeStateInputs(handlerContext, app, iface.ID, inputComponents, requestData)
 
 		hydrated, err := hydrateAssets(inputComponents, requestData, store)
@@ -466,6 +527,21 @@ func handleEvent(
 			return
 		}
 
+		if err := validateOutputCardinality(outputComponents, values); err != nil {
+			errorRequest(
+				logger,
+				r,
+				"event output cardinality invalid",
+				"interface_id",
+				request.InterfaceID,
+				"event_id",
+				request.EventID,
+				"error",
+				err,
+			)
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 		responseData, err := dehydrateEventOutputs(outputComponents, values, store)
 		if err != nil {
 			errorRequest(
@@ -484,7 +560,24 @@ func handleEvent(
 		}
 		updateStateFromOutputs(app, iface.ID, outputComponents, values)
 
-		writeJSON(w, http.StatusOK, eventResponse{Data: mapOutputsByID(outputComponents, responseData)})
+		mappedResponse, err := mapOutputsByID(outputComponents, responseData)
+		if err != nil {
+			errorRequest(
+				logger,
+				r,
+				"event response mapping failed",
+				"interface_id",
+				request.InterfaceID,
+				"event_id",
+				request.EventID,
+				"error",
+				err,
+			)
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, eventResponse{Data: mappedResponse})
 	}
 }
 
@@ -1040,24 +1133,45 @@ func componentsByIDs(components []component.Component, ids []string) ([]componen
 	return result, nil
 }
 
-func valuesForComponents(components []component.Component, values map[string]any) []any {
+func valuesForComponents(components []component.Component, values map[string]any) ([]any, error) {
+	allowed := make(map[string]struct{}, len(components))
+	for _, item := range components {
+		allowed[item.ID] = struct{}{}
+	}
+
+	for id := range values {
+		if _, ok := allowed[id]; !ok {
+			return nil, fmt.Errorf("unknown input component %q", id)
+		}
+	}
+
 	result := make([]any, 0, len(components))
 	for _, item := range components {
+		if _, ok := values[item.ID]; !ok {
+			return nil, fmt.Errorf("missing input %q", item.ID)
+		}
 		result = append(result, values[item.ID])
 	}
-	return result
+	return result, nil
 }
 
-func mapOutputsByID(components []component.Component, values []any) map[string]any {
+func validateOutputCardinality(components []component.Component, values []any) error {
+	if len(values) != len(components) {
+		return fmt.Errorf("event returned %d outputs for %d targets", len(values), len(components))
+	}
+	return nil
+}
+
+func mapOutputsByID(components []component.Component, values []any) (map[string]any, error) {
+	if err := validateOutputCardinality(components, values); err != nil {
+		return nil, err
+	}
+
 	result := make(map[string]any, len(components))
 	for index, item := range components {
-		if index >= len(values) {
-			result[item.ID] = nil
-			continue
-		}
 		result[item.ID] = values[index]
 	}
-	return result
+	return result, nil
 }
 
 func hydrateAssets(inputs []component.Component, data []any, store *assetStore) ([]any, error) {
@@ -1083,8 +1197,7 @@ func hydrateAssets(inputs []component.Component, data []any, store *assetStore) 
 
 		id, _ := descriptor["id"].(string)
 		if id == "" {
-			hydrated = append(hydrated, item)
-			continue
+			return nil, fmt.Errorf("media input %q requires asset id", component.ID)
 		}
 
 		record, found := store.get(id)
