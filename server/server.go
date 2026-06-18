@@ -1177,14 +1177,18 @@ func valuesForComponents(components []component.Component, values map[string]any
 
 	result := make([]any, 0, len(components))
 	for _, item := range components {
-		if _, ok := values[item.ID]; !ok {
-			if item.Type == "state" {
-				result = append(result, nil)
-				continue
+		value, ok := values[item.ID]
+		if item.Type == "state" {
+			if ok {
+				return nil, fmt.Errorf("state input %q cannot be set by client", item.ID)
 			}
+			result = append(result, nil)
+			continue
+		}
+		if !ok {
 			return nil, fmt.Errorf("missing input %q", item.ID)
 		}
-		result = append(result, values[item.ID])
+		result = append(result, value)
 	}
 	return result, nil
 }

@@ -1728,6 +1728,82 @@ func TestEventEndpointReturnsClearErrorForInvalidInterface(t *testing.T) {
 	}
 }
 
+func TestEventEndpointReturnsClearErrorForInvalidEventID(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	app.Blocks(func(blocks *goleo.Blocks) {
+		prompt := blocks.Textbox("Prompt")
+		out := blocks.Textbox("Result")
+		run := blocks.Button("Run")
+		run.Click(
+			goleo.Handler(func(input string) (string, error) { return input, nil }),
+			goleo.Inputs(prompt),
+			goleo.Outputs(out),
+		)
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	resp, err := http.Post(
+		server.URL+"/api/event",
+		"application/json",
+		strings.NewReader(`{"interface_id":"blocks-1","event_id":"missing-event","data":{}}`),
+	)
+	if err != nil {
+		t.Fatalf("post event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+	var got struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if got.Error.Code != "not_found" || !strings.Contains(got.Error.Message, `event "missing-event" not found for interface "blocks-1"`) {
+		t.Fatalf("error = %#v, want clear missing event", got.Error)
+	}
+}
+
+func TestEventEndpointRejectsMalformedDataShape(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	app.Blocks(func(blocks *goleo.Blocks) {
+		prompt := blocks.Textbox("Prompt")
+		out := blocks.Textbox("Result")
+		run := blocks.Button("Run")
+		run.Click(
+			goleo.Handler(func(input string) (string, error) { return input, nil }),
+			goleo.Inputs(prompt),
+			goleo.Outputs(out),
+		)
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	resp, err := http.Post(
+		server.URL+"/api/event",
+		"application/json",
+		strings.NewReader(`{"interface_id":"blocks-1","event_id":"blocks-1-event-1","data":[]}`),
+	)
+	if err != nil {
+		t.Fatalf("post event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	assertEventBadRequest(t, resp, "cannot unmarshal array")
+}
+
 func TestEventEndpointRejectsUnknownDataComponentID(t *testing.T) {
 	t.Parallel()
 
@@ -1797,6 +1873,48 @@ func TestEventEndpointRejectsMissingInputKey(t *testing.T) {
 	defer resp.Body.Close()
 
 	assertEventBadRequest(t, resp, fmt.Sprintf("missing input %q", prompt.ID))
+}
+
+func TestEventEndpointRejectsClientProvidedStateInput(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	var prompt, state goleo.Component
+	app.Blocks(func(blocks *goleo.Blocks) {
+		prompt = blocks.Textbox("Prompt")
+		state = blocks.State("Memory", goleo.WithDefault("saved"))
+		out := blocks.Textbox("Result")
+		run := blocks.Button("Run")
+		run.Click(
+			goleo.Handler(func(input string, memory string) (string, error) {
+				return input + ":" + memory, nil
+			}),
+			goleo.Inputs(prompt, state),
+			goleo.Outputs(out),
+		)
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	requestBody, err := json.Marshal(map[string]any{
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-1",
+		"data": map[string]any{
+			prompt.ID: "hello",
+			state.ID:  "client",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal event request: %v", err)
+	}
+	resp, err := http.Post(server.URL+"/api/event", "application/json", bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("post event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	assertEventBadRequest(t, resp, fmt.Sprintf("state input %q cannot be set by client", state.ID))
 }
 
 func TestEventEndpointRejectsMediaInputWithoutID(t *testing.T) {
@@ -1873,6 +1991,121 @@ func TestEventEndpointRejectsMediaInputNonObject(t *testing.T) {
 	defer resp.Body.Close()
 
 	assertEventBadRequest(t, resp, fmt.Sprintf("media input %q must be an object", audio.ID))
+}
+
+func TestEventEndpointRejectsMissingAssetID(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	var audio goleo.Component
+	app.Blocks(func(blocks *goleo.Blocks) {
+		audio = blocks.Audio("Prompt")
+		out := blocks.Textbox("Result")
+		run := blocks.Button("Run")
+		run.Click(
+			goleo.Handler(func(input goleo.AudioInput) (string, error) { return input.Name, nil }),
+			goleo.Inputs(audio),
+			goleo.Outputs(out),
+		)
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	requestBody, err := json.Marshal(map[string]any{
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-1",
+		"data": map[string]any{
+			audio.ID: map[string]any{"id": "missing-asset"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal event request: %v", err)
+	}
+	resp, err := http.Post(server.URL+"/api/event", "application/json", bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("post event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	assertEventBadRequest(t, resp, `asset "missing-asset" not found`)
+}
+
+func TestEventEndpointRejectsUnknownTargetComponentID(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	var prompt goleo.Component
+	app.Blocks(func(blocks *goleo.Blocks) {
+		prompt = blocks.Textbox("Prompt")
+		run := blocks.Button("Run")
+		blocks.BindEvent(
+			"click",
+			run,
+			goleo.Handler(func(input string) (string, error) { return input, nil }),
+			goleo.Inputs(prompt),
+			goleo.Outputs(goleo.Component{ID: "missing-target"}),
+		)
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	requestBody, err := json.Marshal(map[string]any{
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-1",
+		"data": map[string]any{
+			prompt.ID: "hello",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal event request: %v", err)
+	}
+	resp, err := http.Post(server.URL+"/api/event", "application/json", bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("post event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	assertEventInternalError(t, resp, `component "missing-target" not found`)
+}
+
+func TestEventEndpointReturnsHandlerError(t *testing.T) {
+	t.Parallel()
+
+	app := goleo.New()
+	var prompt goleo.Component
+	app.Blocks(func(blocks *goleo.Blocks) {
+		prompt = blocks.Textbox("Prompt")
+		out := blocks.Textbox("Result")
+		run := blocks.Button("Run")
+		run.Click(
+			goleo.Handler(func(input int) (string, error) { return "", nil }),
+			goleo.Inputs(prompt),
+			goleo.Outputs(out),
+		)
+	})
+
+	server := httptest.NewServer(app.Handler())
+	defer server.Close()
+
+	requestBody, err := json.Marshal(map[string]any{
+		"interface_id": "blocks-1",
+		"event_id":     "blocks-1-event-1",
+		"data": map[string]any{
+			prompt.ID: "not-a-number",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal event request: %v", err)
+	}
+	resp, err := http.Post(server.URL+"/api/event", "application/json", bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("post event: %v", err)
+	}
+	defer resp.Body.Close()
+
+	assertEventBadRequest(t, resp, "input 0")
 }
 
 func TestEventEndpointRejectsOutputCardinalityMismatch(t *testing.T) {
